@@ -1,32 +1,28 @@
-function [u,y,args] = RecedingHorizonDirichlet()
+function [uconcat,yconcat,pconcat,args] = RecedingHorizonDirichlet()
     
     ClearClose();
 
     args = CreateParameters();
     args.matrices = BuildMatrices(args);
-    
+
     % observation domain
     args.matrices.Obs = ...
         ComputeObservationMatrix(1,args.N+1,args);
     args.matrices.Adjoint = args.matrices.trial*...
         args.matrices.Obs*(args.matrices.trialTInv)';
-    
+
     % control domain
     [chi, chiT] = ...
         ComputeControlMatrix(1,args.N+1,args);
-    
-    % convolution of our dirac with smooth function
-     [Conv,ConvT] = ComputeConvolutionMatrix(@fconvolution,args);
-%     
      args.matrices.B = chi;
      args.matrices.BT = chiT;
      
-         %% Uncomment if you want to check gradient/hessian
-     u = 1*ones(args.nmax+2, args.N+1);
-     CheckGradient(u, u, @solveState, @solveAdjoint, ...
-        @compute_j, @compute_derivatives_j, args);
-     CheckHessian(u, u, @solveState, @solveAdjoint, ...
-        @solveTangent, @solveDFH, @compute_j, @compute_second_derivatives_j, args);
+    %% Uncomment if you want to check gradient/hessian
+%     u = 1*ones(args.nmax+2, args.N+1);
+%     CheckGradient(u, u, @solveState, @solveAdjoint, ...
+%     @compute_j, @compute_derivatives_j, args);
+%     CheckHessian(u, u, @solveState, @solveAdjoint, ...
+%     @solveTangent, @solveDFH, @compute_j, @compute_second_derivatives_j, args);
 %      
      
      
@@ -38,9 +34,9 @@ function [u,y,args] = RecedingHorizonDirichlet()
 %      %A = 25; B = 16;  %16;
 %      %args.y0 = 3*A^2*sech(.5*(A*(args.chebyGL+2))).^2 + 3*B^2*sech(.5*(B*(args.chebyGL))).^2;
 %      %plot(args.chebyGL,args.y0);
-%      args.kappa = 0.3;
-%      args.x0 = 0.0;
-%      args.y0 =12*args.kappa^2*sech(args.kappa*(args.chebyGL - args.x0)).^2;%valeurs aux chebypoints
+      args.kappa = 0.3;
+      args.x0 = 0.0;
+      args.y0 =12*args.kappa^2*sech(args.kappa*(args.chebyGL - args.x0)).^2;%valeurs aux chebypoints
 %      %args.yspecobs = args.matrices.trialT\(args.yobs)';
 %      y = solveState(u,args);% one forward simulation for y
 %      plottedsteps=1:2:size(y.spatial,1);
@@ -57,6 +53,36 @@ function [u,y,args] = RecedingHorizonDirichlet()
 %      title('State Variable y');
 %      view(-16,10);
 %      shading interp;
+
+
+%% Receding Horizon
+    for irh=1:args.nrecinf
+        if(irh>1)%initial condition is previous result at time = delta
+            args.y0 = ykeep(end,:);
+        end
+        %run optimization process bis T;
+        [y,p,u,args] = solveOptimization((irh-1)*args.delta,args);
+        %keep data only until delta
+        ykeep = y.spatial(1:args.nkeep,:);
+        pkeep = p.spatial(1:args.nkeep,:);
+        ukeep = u(1:args.nkeep,:);
+        %concatenate results
+        if(irh==1)
+          yconcat =  ykeep(1:end-1,:);
+          pconcat =  pkeep(1:end-1,:); 
+          uconcat = ukeep(1:end-1,:);
+        else
+            yconcat = [yconcat;ykeep(1:end-1,:)];%last step counts as initial step in next
+            pconcat = [pconcat;pkeep(1:end-1,:)];
+            uconcat = [uconcat;ukeep(1:end-1,:)];
+        end
+        if(irh==(args.nrecinf))
+            yconcat = [yconcat;ykeep(end,:)];
+            pconcat = [pconcat;pkeep(end,:)];
+            uconcat = [uconcat;ukeep(end,:)];
+        end
+    end
+    %myvisu(3,yconcat,pconcat,uconcat,gamma,args);
  end
 
 function ClearClose()   
@@ -84,7 +110,7 @@ function args = CreateParameters()
 
     % Mesh
     args.D = 40; %domain is -50..50
-    args.N = 160; %number of points
+    args.N = 256; %number of points
     args.k = args.N:-1:0;
 
     %Creation of Chebyshev Gauss-Lobatto points - our nodal basis
@@ -92,16 +118,24 @@ function args = CreateParameters()
     args.npoints = size(args.chebyGL,2);
     args.spacestep = [(args.chebyGL(2:end) - args.chebyGL(1:end-1))] ;
     args.ncells = args.npoints-1;
+    
+    %Receding horizon
+    args.delta = 1.0;
+    args.T = 2.0;
+    args.Tinf = 10.0;
+    args.nrecinf = floor(args.Tinf/args.delta);
 
     %time argseters
     args.dt = 0.01;% time step for simulation
-    args.tmax = 2.01;% maximum time for simulation
+    args.tmax = args.T;% maximum time for simulation
     args.nmax = round(args.tmax/args.dt);% induced number of time steps
     args.tdata = args.dt*(0:1:(args.nmax+1));
     args.maxiter = 1e3;
+    args.nkeep = floor(args.delta/args.dt)+1;
+
 
     % Optimization parameters
-    args.alpha = 0.1;
+    args.alpha = 0.0;
     args.epsilon = 1e-12;
 
 
@@ -264,23 +298,6 @@ function [B,BT] = ComputeControlMatrix(i1,i2,args)
         B(controldomain(i), controldomain(i)) = 1.0;
     end
 BT = B';  
-end
-
-function res = fconvolution(x,x_center)
-    %res = -0.626657*exp(-0.5*(x-x_center).^2).*(x-x_center);
-    res = (x==x_center);
-end
-
-function [Conv,ConvT] = ComputeConvolutionMatrix(fconv,args)
-    Conv = zeros(args.N+1, args.N+1);
-    for i=1:args.N+1
-        xi = args.chebyGL(i);
-        for j=1:(args.N+1)
-            xj = args.chebyGL(j);
-            Conv(i,j) = fconv(xi,xj);
-        end
-    end
-    ConvT = Conv';
 end
 
 %% %%%%%%%%%%%%%%%% solveState functions %%%%%%%%%%%%%%%%
@@ -635,18 +652,18 @@ function DGh = compute_reduced_hessian(q,dq,u,y,p,gamma,args)
 
 end
 
-function solveOptimization()
-    q = 0.01*ones((args.nmax+1)*(args.N+1),1);%initialization of the normal variable
-    u = proximalOp(q,args.gammaArray(1),args);
-        
+function [y,p,u,args] = solveOptimization(t0,args)
     gamma = args.gamma;
+    q = 0.01*ones((args.nmax+1)*(args.N+1),1);%initialization of the normal variable
+    u = proximalOp(q,gamma,args);
+        
 
 %%  Start of Trust Region Steihaug globalization strategy
     fprintf('Steihaug-CG globalization strategy...\n');
     delta = args.delta;
     %gamma = args.gamma;% regularization term in 1/gamma
-    fprintf('gamma = %d , alpha = %d, delta = %d\n', ...
-        gamma, args.alpha, delta);
+    fprintf('gamma = %d , t_0 = %d, delta = %d\n', ...
+        gamma, t0, delta);
     abstol=1e-6;
     %     
     %q = 1.0*ones((args.nmax+1)*(args.N+1),1);%initialization of the normal variable
@@ -666,14 +683,13 @@ function solveOptimization()
 
         % compute reduced objective functional
         % f(u) = j + L12 + L22
-        % f(u) = 1/2|y(u) - yd|^2 + gamma/2*|u|_{L2(L2)}^2 + alpha|u|_{L1(L2)}
+        % f(u) = 1/2|y(u) - yd|^2 + gamma/2*|u|_{L2(L2)}^2
         j = compute_j(u,y,args);
-        norm12 = args.alpha*sum(args.matrices.MassS*( sqrt(sum(args.matrices.MassT*((u).*(u))))' ));
 
         %sqrt(args.dt*sum(u.*u)) )');
         uvec = u(:);
         norm22 = 0.5*gamma*uvec'*args.matrices.Mass*uvec;
-        f = j + norm12 + norm22;
+        f = j + norm22;
 
         if iter > 1
             %check for descent in objective functional
@@ -740,7 +756,7 @@ function solveOptimization()
         % apply (TR)-Newton update
         q = qold + dq;
         
-        myvisu(3,y.spatial,p.spatial,u,gamma,args);
+        %myvisu(3,y.spatial,p.spatial,u,gamma,args);
     end %end TR-SN loop
 end
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

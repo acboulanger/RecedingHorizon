@@ -12,8 +12,11 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonDirichlet()
         args.matrices.Obs*(args.matrices.trialTInv)';
 
     % control domain
+    controldomain = zeros(1,args.N+1);
+    controldomain(floor((args.N+1)/8):floor(3*(args.N+1)/8)) = 1.0;
+    controldomain(floor(5*(args.N+1)/8.0):floor(7*(args.N+1)/8.0)) = 1.0;
     [chi, chiT] = ...
-        ComputeControlMatrix(1,args.N+1,args);
+        ComputeControlMatrix2(controldomain,args);
      args.matrices.B = chi;
      args.matrices.BT = chiT;
      
@@ -27,20 +30,21 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonDirichlet()
      
      
      %% Check forward problem
-%      u = zeros(args.nmax+1,args.N+1);%initialization of the control
+      u = zeros(args.nmax+1,args.N+1);%initialization of the control
 %      %u(1:floor(args.nmax/2),args.N/2-10) = +2.0;
 %      %u(1:floor(args.nmax/2),args.N/2-5) = -2.0;
 %      
 %      %A = 25; B = 16;  %16;
 %      %args.y0 = 3*A^2*sech(.5*(A*(args.chebyGL+2))).^2 + 3*B^2*sech(.5*(B*(args.chebyGL))).^2;
 %      %plot(args.chebyGL,args.y0);
-      args.kappa = 0.3;
-      args.x0 = 0.0;
-      args.y0 =12*args.kappa^2*sech(args.kappa*(args.chebyGL - args.x0)).^2;%valeurs aux chebypoints
+      args.kappa = 0.70;
+      args.x0 = -2.0;
+      args.y0 = 12*args.kappa^2*sech(args.kappa*(args.chebyGL - args.x0)).^2;%valeurs aux chebypoints
+      %args.y0 = exp(-1.5*(args.chebyGL+12).*(args.chebyGL+12)/(2.0*args.D));%valeurs aux chebypoints
 %      %args.yspecobs = args.matrices.trialT\(args.yobs)';
-%      y = solveState(u,args);% one forward simulation for y
-%      plottedsteps=1:2:size(y.spatial,1);
-%      [tg,xg] = meshgrid(args.tdata(plottedsteps),args.chebyGL(1:end));
+      y = solveState(u,args);% one forward simulation for y
+      plottedsteps=1:2:size(y.spatial,1);
+      [tg,xg] = meshgrid(args.tdata(plottedsteps),args.chebyGL(1:end));
 % %    
 % 
 %     surf(xg,tg,u(plottedsteps,:)');
@@ -48,41 +52,55 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonDirichlet()
 %     title('Source term');
 %     view(-16,10);
 %     shading interp;
-%      surf(xg,tg,y.spatial(plottedsteps,:)');
-%      xlabel('x');ylabel('Time');zlabel('State variable y');
-%      title('State Variable y');
-%      view(-16,10);
-%      shading interp;
+% figure(1);
+%       surf(xg,tg,y.spatial(plottedsteps,:)');
+%       xlabel('x');ylabel('Time');zlabel('State variable y');
+%       title('State Variable y');
+%       view(-16,10);
+%       shading interp;
+% 
+%       figure(2);
+%       visunormL2(2,y.spatial(1:100:end,:),args);
 
 
 %% Receding Horizon
+    yconcat= zeros(floor(args.Tinf/args.dt)+1, args.N+1);
+    pconcat= zeros(floor(args.Tinf/args.dt)+1, args.N+1);
+    uconcat= zeros(floor(args.Tinf/args.dt)+1, args.N+1);
     for irh=1:args.nrecinf
         if(irh>1)%initial condition is previous result at time = delta
             args.y0 = ykeep(end,:);
         end
         %run optimization process bis T;
-        [y,p,u,args] = solveOptimization((irh-1)*args.delta,args);
-        %keep data only until delta
+        [y,p,u,args] = solveOptimization((irh-1)*args.deltarh,args);
+        
+        %keep data only until deltarh
         ykeep = y.spatial(1:args.nkeep,:);
         pkeep = p.spatial(1:args.nkeep,:);
         ukeep = u(1:args.nkeep,:);
+        
         %concatenate results
         if(irh==1)
-          yconcat =  ykeep(1:end-1,:);
-          pconcat =  pkeep(1:end-1,:); 
-          uconcat = ukeep(1:end-1,:);
+          yconcat(1:(args.nkeep-1),:) =  ykeep(1:end-1,:);
+          pconcat(1:(args.nkeep-1),:) =  pkeep(1:end-1,:); 
+          uconcat(1:(args.nkeep-1),:) = ukeep(1:end-1,:);
         else
-            yconcat = [yconcat;ykeep(1:end-1,:)];%last step counts as initial step in next
-            pconcat = [pconcat;pkeep(1:end-1,:)];
-            uconcat = [uconcat;ukeep(1:end-1,:)];
+            yconcat((args.nkeep-1)*(irh-1) + (1:(args.nkeep-1)),:) = ykeep(1:end-1,:);%last step counts as initial step in next
+            pconcat((args.nkeep-1)*(irh-1) + (1:(args.nkeep-1)),:) = pkeep(1:end-1,:);
+            uconcat((args.nkeep-1)*(irh-1) + (1:(args.nkeep-1)),:) = ukeep(1:end-1,:);
         end
         if(irh==(args.nrecinf))
-            yconcat = [yconcat;ykeep(end,:)];
-            pconcat = [pconcat;pkeep(end,:)];
-            uconcat = [uconcat;ukeep(end,:)];
+            yconcat(end,:) = ykeep(end,:);
+            pconcat(end,:) = pkeep(end,:);
+            uconcat(end,:) = ukeep(end,:);
         end
-    end
-    %myvisu(3,yconcat,pconcat,uconcat,gamma,args);
+        %myvisu(1,yconcat,pconcat,uconcat,args);
+        %visunormL2(2,yconcat,args);
+    end%end loop on deltas
+    %myvisu(1,yconcat,pconcat,uconcat,args);
+    %plot evolution of L2 norms
+    %visunormL2(2,yconcat,args);
+    %visunormL2(3,uconcat,args);    
  end
 
 function ClearClose()   
@@ -109,7 +127,7 @@ end
 function args = CreateParameters()
 
     % Mesh
-    args.D = 40; %domain is -50..50
+    args.D = 50; %domain is -50..50
     args.N = 256; %number of points
     args.k = args.N:-1:0;
 
@@ -120,10 +138,10 @@ function args = CreateParameters()
     args.ncells = args.npoints-1;
     
     %Receding horizon
-    args.delta = 1.0;
-    args.T = 2.0;
-    args.Tinf = 10.0;
-    args.nrecinf = floor(args.Tinf/args.delta);
+    args.deltarh = 1.0;
+    args.T = 1.5;
+    args.Tinf = 500.0;
+    args.nrecinf = floor(args.Tinf/args.deltarh);
 
     %time argseters
     args.dt = 0.01;% time step for simulation
@@ -131,7 +149,10 @@ function args = CreateParameters()
     args.nmax = round(args.tmax/args.dt);% induced number of time steps
     args.tdata = args.dt*(0:1:(args.nmax+1));
     args.maxiter = 1e3;
-    args.nkeep = floor(args.delta/args.dt)+1;
+    args.nkeep = floor(args.deltarh/args.dt)+1;
+    args.nmaxrh = round(args.Tinf/args.dt);% induced number of time steps
+    args.tdatarh = args.dt*(0:1:(args.nmaxrh+1));
+
 
 
     % Optimization parameters
@@ -140,9 +161,8 @@ function args = CreateParameters()
 
 
     % Trust region Steihaug globalization
-    args.gamma = 1.0;
-    %args.gammaArray = [10 1 0.5 0.25 0.1 0.05 0.025 0.01 0.0075 0.005 0.0025 0.001 0.00075 0.0005 0.00025 0.0001 0.00001];
-    args.delta = 1.0;
+    args.gamma =1.0;
+    %args.delta = 1.0;
     args.sigma = 10.0;
     args.sigmamax = 100.0;
 
@@ -159,7 +179,7 @@ function args = CreateParameters()
     args.normp = zeros(1,args.N+1);
     
     % physical parameters
-    args.f = 0.0;%-0.50;
+    args.f =1.0;%-0.50;
     args.coeff3d = 1.0;%-1.0/6.0;
     args.coeffburgers = 1.0;%3.0/2.0;
     args.coeffsource = 1.0;%1.0/2.0;
@@ -296,6 +316,16 @@ function [B,BT] = ComputeControlMatrix(i1,i2,args)
     B = zeros(args.N+1);
     for i=1:size(controldomain,2)
         B(controldomain(i), controldomain(i)) = 1.0;
+    end
+BT = B';  
+end
+
+function [B,BT] = ComputeControlMatrix2(controldomain,args)
+    B = zeros(args.N+1);
+    for i=1:(args.N+1)
+        if(controldomain(i)==1)
+            B(i, i) = 1.0;
+        end
     end
 BT = B';  
 end
@@ -660,10 +690,10 @@ function [y,p,u,args] = solveOptimization(t0,args)
 
 %%  Start of Trust Region Steihaug globalization strategy
     fprintf('Steihaug-CG globalization strategy...\n');
-    delta = args.delta;
+    %delta = args.delta;
     %gamma = args.gamma;% regularization term in 1/gamma
     fprintf('gamma = %d , t_0 = %d, delta = %d\n', ...
-        gamma, t0, delta);
+        gamma, t0, args.deltarh);
     abstol=1e-6;
     %     
     %q = 1.0*ones((args.nmax+1)*(args.N+1),1);%initialization of the normal variable
@@ -774,11 +804,27 @@ function visunormq(nfig,q,gamma,args)
     hold off;
 end
 
-function myvisu(nfig,y,p,q,gamma,args,plottedsteps)
+function visunormL2(nfig,y,args)
+    n = size(y,1);
+    L2NormInSpace = zeros(1,n);
+    for i=1:n
+        discr = y(i,:)';
+        ymyd = args.matrices.trialT\discr;
+        L2NormInSpace(i) = ymyd'*(args.matrices.A*ymyd);
+    end
+    figure(nfig);
+    clf(nfig);
+    hold on;
+    plot(L2NormInSpace);
+    xlabel('x');ylabel('||y||_{L^2(I)}');
+    hold off;
+end
+
+function myvisu(nfig,y,p,q,args)
     %% 3D - Vizualization
     figure(nfig);
     plottedsteps=1:2:size(y,1);
-    [tg,xg] = meshgrid(args.tdata(plottedsteps),args.chebyGL(1:end));
+    [tg,xg] = meshgrid(args.tdatarh(plottedsteps),args.chebyGL(1:end));
     
     subplot(2,2,1), surf(xg,tg,y(plottedsteps,:)');
     xlabel('x');ylabel('Time');zlabel('y');
@@ -800,13 +846,6 @@ function myvisu(nfig,y,p,q,gamma,args,plottedsteps)
     %axis([-16,16,0,0.5,-2,3]);
     view(-8,40);
     shading interp;
-    
-    subplot(2,3,6), plot(args.chebyGL(1:end),args.matrices.Obs*(y(end,:)'-args.yobs'));
-    xlabel('x');zlabel('y(T) - yobs');
-    title('Error');
-
-    str = sprintf('Optimization, gamma = %d', gamma);
-    suptitle(str);
     
     drawnow();
 end

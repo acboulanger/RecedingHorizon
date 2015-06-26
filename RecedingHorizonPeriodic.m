@@ -6,7 +6,7 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
     args.kappa = 0.70;
     args.x0 = -2.0;
     args.y0 = 12*args.kappa^2*sech(args.kappa*(args.x - args.x0)).^2;%valeurs aux chebypoints
-    %args.y0 = exp(-1.5*(args.chebyGL+12).*(args.chebyGL+12)/(2.0*args.D));%valeurs aux chebypoints
+    args.y0 = args.y0';
     u = zeros(args.nmax+1,args.N);%initialization of the control
 
     y = solveState(u,args);% one forward simulation for y
@@ -49,13 +49,11 @@ function ClearClose()
     clear variables;
 end
 
-
 function args = CreateParameters()
 
     % Mesh
     args.D = 5*pi; %domain is -5pi..5pi
     args.N = 256; %number of points
-    args.k = args.N:-1:0;
     args.x = linspace(-args.D,args.D,args.N);
     args.k = [0:args.N/2-1 0 -args.N/2+1:-1]*2*pi/(2*args.D); % frequency grid
     args.npoints = size(args.x,2);
@@ -64,7 +62,7 @@ function args = CreateParameters()
     
     %Receding horizon
     args.deltarh = 1.0;
-    args.T = 1.0;
+    args.T = 1.5;
     args.Tinf = 500.0;
     args.nrecinf = floor(args.Tinf/args.deltarh);
 
@@ -77,21 +75,30 @@ function args = CreateParameters()
     args.nkeep = floor(args.deltarh/args.dt)+1;
     args.nmaxrh = round(args.Tinf/args.dt);% induced number of time steps
     args.tdatarh = args.dt*(0:1:(args.nmaxrh+1));
+    
+    %% Useful constants
+    ik3 = 1i*(args.k' - (args.k').^3);
+    args.g = -0.5*1i*args.k';
+    args.E = exp(-args.dt*ik3);
 
     % Optimization parameters
     args.alpha = 0.0;
     args.epsilon = 1e-12;
-    % for fsolve
-    args.optimOpt.TolFun = 1e-5;
-    args.optimOpt.Jacobian = 'on';
-    args.optimOpt.DerivativeCheck = 'off';
-    args.optimOpt.Display = 'on';
-    %args.optimOpt.Algorithm = 'levenberg-marquardt';
-    args.optimOpt.JacobMult = 'jmfun';
+    % For fsolve
+    args.optimOptState.TolFun = 1e-5;
+    args.optimOptState.Jacobian = 'on';
+    args.optimOptState.Display = 'off';
+    args.optimOptState.Algorithm = 'trust-region-reflective';
+    args.optimOptState.JacobMult = @(Jinfo,y,flag)jmfunstate(Jinfo,y,flag,args);
+    
+    args.optimOptAdjoint.TolFun = 1e-5;
+    args.optimOptAdjoint.Jacobian = 'on';
+    args.optimOptAdjoint.Display = 'off';
+    args.optimOptAdjoint.Algorithm = 'trust-region-reflective';
+    args.optimOptAdjoint.JacobMult = @(Jinfo,y,flag)jmfunadjoint(Jinfo,y,flag,args);
 
     % Trust region Steihaug globalization
     args.gamma =1.0;
-    %args.delta = 1.0;
     args.sigma = 10.0;
     args.sigmamax = 100.0;
 
@@ -99,33 +106,30 @@ function args = CreateParameters()
     args.coeffNL = 1.0;
     
     % default init
-    args.y0 = zeros(1,args.N);
-    args.dy0 = zeros(1,args.N);
+    args.y0 = zeros(1,args.N)';
+    args.dy0 = zeros(1,args.N)';
     args.yobs = zeros(args.nmax+2,args.N);
     args.yspecobs = zeros(args.nmax+2,args.N)';
     args.q = 0.0*ones(args.nmax+2, args.N);
-    
-    args.normp = zeros(1,args.N);
+  
 end
 
 function exp = explicitpart(y,u,up,args)
-    exp = args.E.*y + 0.5*args.dt*(args.E.*u +args.g.*args.E.*fft(ifft(y).^2) - up);
+    exp = args.E.*y + 0.5*args.dt*(args.E.*u + args.coeffNL*args.g.*args.E.*fft(ifft(y).^2) + up);
 end
 
 function [F,Jinfo] = fsolverFun(y,b,args)
-    F = y + 0.5*args.dt*args.g.*fft(ifft(y).^2) - b;
+    F = y - args.coeffNL*0.5*args.dt*args.g.*fft(ifft(y).^2) - b;
     Jinfo = y;
 end
 
-function W = jmfun(Jinfo,dy,flag,b,args)
+function W = jmfunstate(Jinfo,dy,flag,args)
     if(flag>0)
+        W = dy - args.dt*args.g.*fft(ifft(Jinfo).*ifft(dy));
+    elseif (flag < 0)
         W = dy + args.dt*args.g.*fft(ifft(Jinfo).*ifft(dy));
-    else
-        if (flag < 0)
-            W = dy - args.dt*args.g.*fft(ifft(Jinfo).*ifft(dy));
-        else
-            W = dy + (args.dt)^2*(args.g).^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dy));
-        end
+    elseif flag == 0 
+        W = dy + 0.25*(args.dt)*args.dt*(args.k').^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dy));
     end
 end
 
@@ -134,7 +138,6 @@ function [y] = solveState(u,args)%CN scheme in time
     dt=args.dt;
     nmax=args.nmax;
     N=args.N;
-    coeffNL=args.coeffNL;
     
     % state variables
     y.spatial = zeros(nmax+1,N);% spatial domain
@@ -146,18 +149,12 @@ function [y] = solveState(u,args)%CN scheme in time
     y.spec(1,:) = yspec0;
     %u = ((args.matrices.B)*(u'))';%effect of indicator function
     fftu = fft(u,[],2);
-
-    %% Useful constants
-    freqgrid = args.k;
-    ik3 = 1i*(freqgrid - freqgrid.^3);
-    args.g = -0.5*1i*freqgrid;
-    args.E = exp(-dt*ik3);
     
     
     yspeci = yspec0;
     %% Time loop
     for i=2:nmax
-        b = explicitpart(yspeci,fftu(i,:), fftu(i+1,:),args);
+        b = explicitpart(yspeci,fftu(i,:)', fftu(i+1,:)',args);
         yspeci = fsolve(@(x) fsolverFun(x,b,args),yspeci,args.optimOpt);
         yi = real(ifft(yspeci));
         y.spec(i+1,:) = yspeci;

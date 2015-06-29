@@ -80,6 +80,8 @@ function args = CreateParameters()
     ik3 = 1i*(args.k' - (args.k').^3);
     args.g = -0.5*1i*args.k';
     args.E = exp(-args.dt*ik3);
+    args.Einv = exp(args.dt*ik3);
+
 
     % Optimization parameters
     args.alpha = 0.0;
@@ -89,7 +91,7 @@ function args = CreateParameters()
     args.optimOptState.Jacobian = 'on';
     args.optimOptState.Display = 'off';
     args.optimOptState.Algorithm = 'trust-region-reflective';
-    args.optimOptState.JacobMult = @(Jinfo,y,flag)jmfunstate(Jinfo,y,flag,args);
+    args.optimOptState.JacobMult = @(Jinfo,y,flag)jmfunState(Jinfo,y,flag,args);
     
     args.optimOptAdjoint.TolFun = 1e-5;
     args.optimOptAdjoint.Jacobian = 'on';
@@ -114,16 +116,16 @@ function args = CreateParameters()
   
 end
 
-function exp = explicitpart(y,u,up,args)
+function exp = explicitpartState(y,u,up,args)
     exp = args.E.*y + 0.5*args.dt*(args.E.*u + args.coeffNL*args.g.*args.E.*fft(ifft(y).^2) + up);
 end
 
-function [F,Jinfo] = fsolverFun(y,b,args)
+function [F,Jinfo] = fsolverState(y,b,args)
     F = y - args.coeffNL*0.5*args.dt*args.g.*fft(ifft(y).^2) - b;
     Jinfo = y;
 end
 
-function W = jmfunstate(Jinfo,dy,flag,args)
+function W = jmfunState(Jinfo,dy,flag,args)
     if(flag>0)
         W = dy - args.dt*args.g.*fft(ifft(Jinfo).*ifft(dy));
     elseif (flag < 0)
@@ -154,11 +156,71 @@ function [y] = solveState(u,args)%CN scheme in time
     yspeci = yspec0;
     %% Time loop
     for i=2:nmax
-        b = explicitpart(yspeci,fftu(i,:)', fftu(i+1,:)',args);
-        yspeci = fsolve(@(x) fsolverFun(x,b,args),yspeci,args.optimOpt);
+        b = explicitpartState(yspeci,fftu(i,:)', fftu(i+1,:)',args);
+        yspeci = fsolve(@(x) fsolverState(x,b,args),yspeci,args.optimOptState);
         yi = real(ifft(yspeci));
         y.spec(i+1,:) = yspeci;
         y.spatial(i+1,:) = yi;
+    end
+end
+
+function p = solveAdjoint(u,y,args)%CN scheme in time
+    % parameters
+    dt=args.dt;
+    nmax=args.nmax;
+    N=args.N;
+    coeffNL = args.coeffNL;
+    matrices = args.matrices;
+    
+    % state variables
+    p.spatial = zeros(nmax+1,N+1);
+    p.spec = zeros(nmax+1,N-2);
+
+    yrev = y.spatial(end:-1:1,:);
+    yobsrev = args.yobs(end:-1:1,:);
+    yspecrev = y.spec(end:-1:1,:);
+
+    
+    rhs = args.matrices.Obs*(y.spatial(end,:)'- args.yobs(end,:)');
+    fftrhs = fft(rhs);
+    
+    %initial condition(implicit given only)
+    pspeci = yspec0;
+    pi = real(ifft(pspeci));
+    p.spec(1,:) = pspeci;
+    p.spatial(1,:) = pi;
+    
+    %% Time loop
+    for i=2:nmax
+        rhs = args.matrices.Obs*(yrev(i,:)'- args.yobsrev(i,:)');
+        fftrhs = fft(rhs);
+        b = explicitpartadjoint(pspeci,yrev(i,:), fftrhs,args);
+        pspeci = fsolve(@(x) fsolverAdjoint(x,b,args),pspeci,args.optimOptAjoint);
+        pi = real(ifft(yspeci));
+        p.spec(i,:) = pspeci;
+        p.spatial(i,:) = pi;
+    end
+    p.spec = p.spec(end:-1:1,:);
+    p.spatial = p.spatial(end:-1:1,:);
+end
+
+function exp = explicitpartAdjoint(p,y,disr,args)
+    exp = args.Einv.*p - args.coeffNL*args.dt*args.g.*args.Einv.*fft(ifft(p).*ifft(y))...
+         - args.dt*discr;
+end
+
+function [F,Jinfo] = fsolverAdjoint(p,y,b,args)
+    F = p + args.coeffNL*args.dt*args.g.*fft(ifft(p).*ifft(y)) - b;
+    Jinfo = y;
+end
+
+function W = jmfunadjoint(Jinfo,dp,flag,args)
+    if(flag>0)
+        W = dp + args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
+    elseif (flag < 0)
+        W = dp - args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
+    elseif flag == 0 
+        W = dp + 0.25*(args.dt)*args.dt*(args.k').^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dp));
     end
 end
     

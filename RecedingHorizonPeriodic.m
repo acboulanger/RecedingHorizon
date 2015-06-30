@@ -2,6 +2,17 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
 
     ClearClose();
     args = CreateParameters();
+    
+    % observation domain
+    args.matrices.Obs = ComputeObservationMatrix(1,args.N,args);
+
+    % control domain
+    controldomain = ones(1,args.N);
+    %controldomain(floor((args.N+1)/8):floor(3*(args.N+1)/8)) = 1.0;
+    %controldomain(floor(5*(args.N+1)/8.0):floor(7*(args.N+1)/8.0)) = 1.0;
+    [chi, chiT] = ComputeControlMatrix2(controldomain,args);
+    args.matrices.B = chi;
+    args.matrices.BT = chiT;
 
     args.kappa = 0.70;
     args.x0 = -2.0;
@@ -10,19 +21,25 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
     u = zeros(args.nmax+1,args.N);%initialization of the control
 
     y = solveState(u,args);% one forward simulation for y
-    
+    p = solveAdjoint(u,y,args);% one forward simulation for y
+
     %% Visu
     plottedsteps=1:2:size(y.spatial,1);
     [tg,xg] = meshgrid(args.tdata(plottedsteps),args.x(1:end));
-    surf(xg,tg,u(plottedsteps,:)');
-    xlabel('x');ylabel('Time');zlabel('u');                   
-    title('Source term');
-    view(-16,10);
-    shading interp;
     figure(1);
     surf(xg,tg,y.spatial(plottedsteps,:)');
     xlabel('x');ylabel('Time');zlabel('State variable y');
     title('State Variable y');
+    view(-16,10);
+    shading interp;
+    
+    
+    plottedsteps=1:2:size(p.spatial,1);
+    [tg,xg] = meshgrid(args.tdata(plottedsteps),args.x(1:end));
+    figure(2);
+    surf(xg,tg,p.spatial(plottedsteps,:)');
+    xlabel('x');ylabel('Time');zlabel('Adjoint variable y');
+    title('Adjoint Variable y');
     view(-16,10);
     shading interp;
 
@@ -94,10 +111,10 @@ function args = CreateParameters()
     args.optimOptState.JacobMult = @(Jinfo,y,flag)jmfunState(Jinfo,y,flag,args);
     
     args.optimOptAdjoint.TolFun = 1e-5;
-    args.optimOptAdjoint.Jacobian = 'on';
+    args.optimOptAdjoint.Jacobian = 'off';
     args.optimOptAdjoint.Display = 'off';
-    args.optimOptAdjoint.Algorithm = 'trust-region-reflective';
-    args.optimOptAdjoint.JacobMult = @(Jinfo,y,flag)jmfunadjoint(Jinfo,y,flag,args);
+    %args.optimOptAdjoint.Algorithm = 'trust-region-reflective';
+    %args.optimOptAdjoint.JacobMult = @(Jinfo,dp,flag)jmfunAdjoint(Jinfo,dp,flag,args);
 
     % Trust region Steihaug globalization
     args.gamma =1.0;
@@ -114,6 +131,33 @@ function args = CreateParameters()
     args.yspecobs = zeros(args.nmax+2,args.N)';
     args.q = 0.0*ones(args.nmax+2, args.N);
   
+end
+
+function [Obs] = ComputeObservationMatrix(i1,i2,args)
+    observationdomain = i1:i2;
+    Obs = zeros(args.N);
+    for i=1:size(observationdomain,2)
+        Obs(observationdomain(i), observationdomain(i)) = 1;
+    end
+end
+
+function [B,BT] = ComputeControlMatrix(i1,i2,args)
+    controldomain = i1:i2;
+    B = zeros(args.N+1);
+    for i=1:size(controldomain,2)
+        B(controldomain(i), controldomain(i)) = 1.0;
+    end
+BT = B';  
+end
+
+function [B,BT] = ComputeControlMatrix2(controldomain,args)
+    B = zeros(args.N);
+    for i=1:(args.N)
+        if(controldomain(i)==1)
+            B(i, i) = 1.0;
+        end
+    end
+BT = B';  
 end
 
 function exp = explicitpartState(y,u,up,args)
@@ -170,33 +214,31 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     nmax=args.nmax;
     N=args.N;
     coeffNL = args.coeffNL;
-    matrices = args.matrices;
     
     % state variables
-    p.spatial = zeros(nmax+1,N+1);
-    p.spec = zeros(nmax+1,N-2);
+    p.spatial = zeros(nmax,N);
+    p.spec = zeros(nmax,N);
 
     yrev = y.spatial(end:-1:1,:);
     yobsrev = args.yobs(end:-1:1,:);
     yspecrev = y.spec(end:-1:1,:);
 
-    
+    %initial condition(implicit given only)
     rhs = args.matrices.Obs*(y.spatial(end,:)'- args.yobs(end,:)');
     fftrhs = fft(rhs);
-    
-    %initial condition(implicit given only)
-    pspeci = yspec0;
+    b = -0.5*args.dt*fftrhs;
+    pspeci = fsolve(@(x) fsolverAdjoint(x,y.spec(end,:),b,args),p.spec(1,:),args.optimOptAdjoint);
     pi = real(ifft(pspeci));
     p.spec(1,:) = pspeci;
     p.spatial(1,:) = pi;
     
     %% Time loop
     for i=2:nmax
-        rhs = args.matrices.Obs*(yrev(i,:)'- args.yobsrev(i,:)');
+        rhs = args.matrices.Obs*(yrev(i,:)'- yobsrev(i,:)');
         fftrhs = fft(rhs);
-        b = explicitpartadjoint(pspeci,yrev(i,:), fftrhs,args);
-        pspeci = fsolve(@(x) fsolverAdjoint(x,b,args),pspeci,args.optimOptAjoint);
-        pi = real(ifft(yspeci));
+        b = explicitpartAdjoint(pspeci,yrev(i,:),fftrhs,args)';
+        pspeci = fsolve(@(x) fsolverAdjoint(x,yrev(i,:),b,args),pspeci,args.optimOptAdjoint);
+        pi = real(ifft(pspeci));
         p.spec(i,:) = pspeci;
         p.spatial(i,:) = pi;
     end
@@ -204,21 +246,21 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     p.spatial = p.spatial(end:-1:1,:);
 end
 
-function exp = explicitpartAdjoint(p,y,disr,args)
-    exp = args.Einv.*p - args.coeffNL*args.dt*args.g.*args.Einv.*fft(ifft(p).*ifft(y))...
-         - args.dt*discr;
+function exp = explicitpartAdjoint(p,y,discr,args)
+    exp = args.Einv'.*p - args.coeffNL*args.dt*args.g'.*args.Einv'.*fft(ifft(p).*ifft(y))...
+         - args.dt*discr';
 end
 
 function [F,Jinfo] = fsolverAdjoint(p,y,b,args)
-    F = p + args.coeffNL*args.dt*args.g.*fft(ifft(p).*ifft(y)) - b;
-    Jinfo = y;
+    F = p + args.coeffNL*args.dt*args.g'.*fft(ifft(p).*ifft(y)) - (b');
+    Jinfo = y';
 end
 
-function W = jmfunadjoint(Jinfo,dp,flag,args)
+function W = jmfunAdjoint(Jinfo,dp,flag,args)
     if(flag>0)
-        W = dp + args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
+        W = dp + args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
     elseif (flag < 0)
-        W = dp - args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
+        W = dp - args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
     elseif flag == 0 
         W = dp + 0.25*(args.dt)*args.dt*(args.k').^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dp));
     end

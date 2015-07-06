@@ -13,6 +13,12 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
     [chi, chiT] = ComputeControlMatrix2(controldomain,args);
     args.matrices.B = chi;
     args.matrices.BT = chiT;
+    
+    
+    %% Uncomment if you want to check gradient/hessian
+    u = 0.01*ones(args.nmax+1, args.N);
+    CheckGradient(u, u, @solveState, @solveAdjoint, ...
+    @compute_j, @compute_derivatives_j, args);
 
     args.kappa = 0.70;
     args.x0 = -2.0;
@@ -95,7 +101,7 @@ function args = CreateParameters()
     
     %% Useful constants
     ik3 = 1i*(args.k' - (args.k').^3);
-    args.g = -0.5*1i*args.k';
+    args.g = -0.5*1i*(args.k');
     args.E = exp(-args.dt*ik3);
     args.Einv = exp(args.dt*ik3);
 
@@ -122,15 +128,13 @@ function args = CreateParameters()
     args.sigmamax = 100.0;
 
     % Misc
-    args.coeffNL = 1.0;
+    args.coeffNL = 0.0;
     
     % default init
     args.y0 = zeros(1,args.N)';
     args.dy0 = zeros(1,args.N)';
     args.yobs = zeros(args.nmax+2,args.N);
-    args.yspecobs = zeros(args.nmax+2,args.N)';
-    args.q = 0.0*ones(args.nmax+2, args.N);
-  
+    args.yspecobs = fft(args.yobs);  
 end
 
 function [Obs] = ComputeObservationMatrix(i1,i2,args)
@@ -227,7 +231,7 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     rhs = args.matrices.Obs*(y.spatial(end,:)'- args.yobs(end,:)');
     fftrhs = fft(rhs);
     b = -0.5*args.dt*fftrhs;
-    pspeci = fsolve(@(x) fsolverAdjoint(x,y.spec(end,:),b,args),p.spec(1,:),args.optimOptAdjoint);
+    pspeci = fsolve(@(x) fsolverAdjoint(x,y.spec(end,:)',b,args),p.spec(1,:)',args.optimOptAdjoint);
     pi = real(ifft(pspeci));
     p.spec(1,:) = pspeci;
     p.spatial(1,:) = pi;
@@ -236,23 +240,27 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     for i=2:nmax
         rhs = args.matrices.Obs*(yrev(i,:)'- yobsrev(i,:)');
         fftrhs = fft(rhs);
-        b = explicitpartAdjoint(pspeci,yrev(i,:),fftrhs,args)';
-        pspeci = fsolve(@(x) fsolverAdjoint(x,yrev(i,:),b,args),pspeci,args.optimOptAdjoint);
+        b = explicitpartAdjoint(pspeci,yrev(i,:)',fftrhs,args);
+        pspeci = fsolve(@(x) fsolverAdjoint(x,yrev(i,:)',b,args),pspeci,args.optimOptAdjoint);
         pi = real(ifft(pspeci));
         p.spec(i,:) = pspeci;
         p.spatial(i,:) = pi;
     end
+    
+    %last time step
+    
+    
     p.spec = p.spec(end:-1:1,:);
     p.spatial = p.spatial(end:-1:1,:);
 end
 
 function exp = explicitpartAdjoint(p,y,discr,args)
-    exp = args.Einv'.*p - args.coeffNL*args.dt*args.g'.*args.Einv'.*fft(ifft(p).*ifft(y))...
-         - args.dt*discr';
+    exp = args.Einv.*p - args.coeffNL*args.dt*args.g.*args.Einv.*fft(ifft(p).*ifft(y))...
+         - args.dt*discr;
 end
 
 function [F,Jinfo] = fsolverAdjoint(p,y,b,args)
-    F = p + args.coeffNL*args.dt*args.g'.*fft(ifft(p).*ifft(y)) - (b');
+    F = p + args.coeffNL*args.dt*args.g.*fft(ifft(p).*ifft(y)) - b;
     Jinfo = y';
 end
 
@@ -264,5 +272,44 @@ function W = jmfunAdjoint(Jinfo,dp,flag,args)
     elseif flag == 0 
         W = dp + 0.25*(args.dt)*args.dt*(args.k').^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dp));
     end
+end
+
+function j = compute_j(u,y,args)
+    j = 0;
+    %discr = args.matrices.Obs*(y.spatial(2,:)'-args.yobs(2,:)');
+    %ymyd = fft(discr);
+    %j = j+ 0.5*0.5*args.dt*ymyd'*ymyd;
+    for i=2:args.nmax
+        discr = args.matrices.Obs*(y.spatial(i,:)'-args.yobs(i,:)');
+        ymyd = fft(discr);
+        j = j+ 0.5*args.dt*ymyd'*ymyd;
+    end
+    %discr = args.matrices.Obs*(y.spatial(end,:)'-args.yobs(end,:)');
+    %ymyd = fft(discr);
+    %j = j+ 0.5*0.5*args.dt*ymyd'*ymyd;
+end
+
+function dj = compute_derivatives_j(u,y,p,args)%do not forget time in inner product
+    %p: row = time, column = space
+    %dj = -p;
+    dj = -((args.matrices.BT)*(p.spatial)')';%each column is B*p(t_i)
+    dj = fft(dj')';
+    dj = args.dt*dj(:);%makes a vector
+    
+    du = fft(du')';
+    nmax = args.nmax;
+    dt = args.dt;
+    M = args.matrices.M;
+    g = 0.0;
+    for i=2:nmax+1
+        pspeci = p.spec(i,:);
+        u1 = (du(i,:)'.*args.Einv)';
+        u2 = du(i+1,:);
+        g = g - 0.5*dt*pspeci'*uspec1 - 0.5*dt*pspeci'*uspec2;
+    end
+
+    dup = du(1:end-1,:);% last step does not count - adjoint has nmax +1 steps while state has nmax+2
+    dup = fft(dup')';
+    jprime = g'*dup(:);
 end
     

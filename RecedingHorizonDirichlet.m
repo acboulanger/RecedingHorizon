@@ -43,8 +43,14 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonDirichlet()
       %args.y0 = exp(-1.5*(args.chebyGL+12).*(args.chebyGL+12)/(2.0*args.D));%valeurs aux chebypoints
 %      %args.yspecobs = args.matrices.trialT\(args.yobs)';
       y = solveState(u,args);% one forward simulation for y
+      
+      p = solveAdjoint(u,y,args);% one forward simulation for y
+      
       plottedsteps=1:2:size(y.spatial,1);
       [tg,xg] = meshgrid(args.tdata(plottedsteps),args.chebyGL(1:end));
+      
+      
+      
 % %    
 % 
 %     surf(xg,tg,u(plottedsteps,:)');
@@ -52,12 +58,20 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonDirichlet()
 %     title('Source term');
 %     view(-16,10);
 %     shading interp;
-% figure(1);
-%       surf(xg,tg,y.spatial(plottedsteps,:)');
-%       xlabel('x');ylabel('Time');zlabel('State variable y');
-%       title('State Variable y');
-%       view(-16,10);
-%       shading interp;
+       figure(1);
+       surf(xg,tg,y.spatial(plottedsteps,:)');
+       xlabel('x');ylabel('Time');zlabel('State variable y');
+       title('State Variable y');
+       view(-16,10);
+       shading interp;
+       
+       figure(2);
+       surf(xg,tg,p.spatial(plottedsteps,:)');
+       xlabel('x');ylabel('Time');zlabel('Adjoint variable p');
+       title('Adjoint Variable p');
+       view(-16,10);
+       shading interp;
+       
 % 
 %       figure(2);
 %       visunormL2(2,y.spatial(1:100:end,:),args);
@@ -127,7 +141,7 @@ end
 function args = CreateParameters()
 
     % Mesh
-    args.D = 50; %domain is -50..50
+    args.D = 5*pi; %domain is -50..50
     args.N = 256; %number of points
     args.k = args.N:-1:0;
 

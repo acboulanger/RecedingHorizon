@@ -105,28 +105,6 @@ function args = CreateParameters()
     args.E = exp(-args.dt*ik3);
     args.Einv = exp(args.dt*ik3);
 
-
-    % Optimization parameters
-    args.alpha = 0.0;
-    args.epsilon = 1e-12;
-    % For fsolve
-    args.optimOptState.TolFun = 1e-5;
-    args.optimOptState.Jacobian = 'off';
-    args.optimOptState.Display = 'off';
-    %args.optimOptState.Algorithm = 'trust-region-reflective';
-    %args.optimOptState.JacobMult = @(Jinfo,y,flag)jmfunState(Jinfo,y,flag,args);
-    
-    args.optimOptAdjoint.TolFun = 1e-5;
-    args.optimOptAdjoint.Jacobian = 'off';
-    args.optimOptAdjoint.Display = 'off';
-    %args.optimOptAdjoint.Algorithm = 'trust-region-reflective';
-    %args.optimOptAdjoint.JacobMult = @(Jinfo,dp,flag)jmfunAdjoint(Jinfo,dp,flag,args);
-
-    % Trust region Steihaug globalization
-    args.gamma =1.0;
-    args.sigma = 10.0;
-    args.sigmamax = 100.0;
-
     % Misc
     args.coeffNL = 1.0;
     
@@ -135,6 +113,22 @@ function args = CreateParameters()
     args.dy0 = zeros(1,args.N)';
     args.yobs = zeros(args.nmax+2,args.N);
     args.yspecobs = fft(args.yobs);  
+
+    % Optimization parameters
+    args.gamma = 1.0;
+    args.epsilon = 1e-12;
+    % For fsolve
+    args.optimOptState.TolFun = 1e-5;
+    args.optimOptState.Jacobian = 'on';
+    args.optimOptState.Display = 'off';
+    args.optimOptState.Algorithm = 'trust-region-reflective';
+    args.optimOptState.JacobMult = @(Jinfo,y,flag)jmfunState(Jinfo,y,flag,args);
+    
+    args.optimOptAdjoint.TolFun = 1e-5;
+    args.optimOptAdjoint.Jacobian = 'on';
+    args.optimOptAdjoint.Display = 'off';
+    args.optimOptAdjoint.Algorithm = 'trust-region-reflective';
+    args.optimOptAdjoint.JacobMult = @(Jinfo,dp,flag)jmfunAdjoint(Jinfo,dp,flag,args);
 end
 
 function [Obs] = ComputeObservationMatrix(i1,i2,args)
@@ -175,11 +169,11 @@ end
 
 function W = jmfunState(Jinfo,dy,flag,args)
     if(flag>0)
-        W = dy - args.dt*args.g.*fft(ifft(Jinfo).*ifft(dy));
+        W = dy - args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dy));
     elseif (flag < 0)
-        W = dy + args.dt*args.g.*fft(ifft(Jinfo).*ifft(dy));
+        W = dy + args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dy));
     elseif flag == 0 
-        W = dy + 0.25*(args.dt)*args.dt*(args.k').^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dy));
+        W = dy + args.coeffNL*0.25*(args.dt)*args.dt*(args.k').^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dy));
     end
 end
 
@@ -266,16 +260,16 @@ end
 
 function [F,Jinfo] = fsolverAdjoint(p,y,b,args)
     F = p + args.coeffNL*args.dt*args.g.*fft(ifft(p).*ifft(y)) - b;
-    Jinfo = y';
+    Jinfo = y;
 end
 
 function W = jmfunAdjoint(Jinfo,dp,flag,args)
     if(flag>0)
-        W = dp + args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
+        W = dp + args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
     elseif (flag < 0)
-        W = dp - args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
+        W = dp - args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
     elseif flag == 0 
-        W = dp + 0.25*(args.dt)*args.dt*(args.k').^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dp));
+        W = dp + args.coeffNL*0.25*(args.dt)*args.dt*(args.k').^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dp));
     end
 end
 

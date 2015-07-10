@@ -7,8 +7,8 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
     args.matrices.Obs = ComputeObservationMatrix(1,args.N,args);
 
     % control domain
-    controldomain = ones(1,args.N);
-    %controldomain(floor((args.N+1)/8):floor(3*(args.N+1)/8)) = 1.0;
+    controldomain = zeros(1,args.N);
+    controldomain(1:(end)) = 1.0;
     %controldomain(floor(5*(args.N+1)/8.0):floor(7*(args.N+1)/8.0)) = 1.0;
     [chi, chiT] = ComputeControlMatrix2(controldomain,args);
     args.matrices.B = chi;
@@ -106,25 +106,25 @@ function args = CreateParameters()
     args.Einv = exp(args.dt*ik3);
 
     % Misc
-    args.coeffNL = 1.0;
+    args.coeffNL = 0.0;
     
     % default init
     args.y0 = zeros(1,args.N)';
     args.dy0 = zeros(1,args.N)';
-    args.yobs = zeros(args.nmax+2,args.N);
-    args.yspecobs = fft(args.yobs);  
+    args.yobs = zeros(args.nmax+1,args.N);
+    args.yspecobs = fft(args.yobs,[],2);  
 
     % Optimization parameters
     args.gamma = 1.0;
     args.epsilon = 1e-12;
     % For fsolve
-    args.optimOptState.TolFun = 1e-5;
+    args.optimOptState.TolFun = 1e-6;
     args.optimOptState.Jacobian = 'on';
     args.optimOptState.Display = 'off';
     args.optimOptState.Algorithm = 'trust-region-reflective';
     args.optimOptState.JacobMult = @(Jinfo,y,flag)jmfunState(Jinfo,y,flag,args);
     
-    args.optimOptAdjoint.TolFun = 1e-5;
+    args.optimOptAdjoint.TolFun = 1e-6;
     args.optimOptAdjoint.Jacobian = 'on';
     args.optimOptAdjoint.Display = 'off';
     args.optimOptAdjoint.Algorithm = 'trust-region-reflective';
@@ -168,11 +168,11 @@ function [F,Jinfo] = fsolverState(y,b,args)
 end
 
 function W = jmfunState(Jinfo,dy,flag,args)
-    if(flag>0)
+    if(flag > 0)
         W = dy - args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dy));
     elseif (flag < 0)
         W = dy + args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dy));
-    elseif flag == 0 
+    elseif(flag == 0) 
         W = dy + args.coeffNL*0.25*(args.dt)*args.dt*(args.k').^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dy));
     end
 end
@@ -191,6 +191,9 @@ function [y] = solveState(u,args)%CN scheme in time
     yspec0 = fft(args.y0);
     y.spatial(1,:) = args.y0;
     y.spec(1,:) = yspec0;
+    for i=1:args.nmax+1
+        u(i,:) = args.matrices.B*u(i,:)';
+    end
     %u = ((args.matrices.B)*(u'))';%effect of indicator function
     fftu = fft(u,[],2);
     
@@ -200,7 +203,8 @@ function [y] = solveState(u,args)%CN scheme in time
     for i=2:nmax+1
         b = explicitpartState(yspeci,fftu(i-1,:)', fftu(i,:)',args);
         yspeci = fsolve(@(x) fsolverState(x,b,args),yspeci,args.optimOptState);
-        yi = real(ifft(yspeci));
+        %yi = real(ifft(yspeci));
+        yi = (ifft(yspeci));
         y.spec(i,:) = yspeci;
         y.spatial(i,:) = yi;
     end
@@ -226,7 +230,8 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     fftrhs = fft(rhs);
     b = -0.5*args.dt*fftrhs;
     pspeci = fsolve(@(x) fsolverAdjoint(x,y.spec(end,:)',b,args),p.spec(1,:)',args.optimOptAdjoint);
-    pi = real(ifft(pspeci));
+    %pi = real(ifft(pspeci));
+    pi = (ifft(pspeci));
     p.spec(1,:) = pspeci;
     p.spatial(1,:) = pi;
     
@@ -236,17 +241,19 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
         fftrhs = fft(rhs);
         b = explicitpartAdjoint(pspeci,yrev(i,:)',fftrhs,args);
         pspeci = fsolve(@(x) fsolverAdjoint(x,yrev(i,:)',b,args),pspeci,args.optimOptAdjoint);
-        pi = real(ifft(pspeci));
+        %pi = real(ifft(pspeci));
+        pi = (ifft(pspeci));
         p.spec(i,:) = pspeci;
         p.spatial(i,:) = pi;
     end
     
     %last time step
-    rhs = args.matrices.Obs*(y.spatial(end,:)'- args.yobs(end,:)');
+    rhs = args.matrices.Obs*(yrev(end,:)'- yobsrev(end,:)');
     fftrhs = fft(rhs);
     pspeci = args.Einv.*pspeci - args.coeffNL*args.dt*args.g.*args.Einv.*fft(ifft(pspeci).*ifft(yrev(end,:)'))...
          -0.5*args.dt*fftrhs;
-    pi = real(ifft(pspeci));
+    %pi = real(ifft(pspeci));
+    pi = (ifft(pspeci));
     p.spec(end,:) = pspeci;
     p.spatial(end,:) = pi;
     p.spec = p.spec(end:-1:1,:);
@@ -264,11 +271,11 @@ function [F,Jinfo] = fsolverAdjoint(p,y,b,args)
 end
 
 function W = jmfunAdjoint(Jinfo,dp,flag,args)
-    if(flag>0)
+    if (flag > 0)
         W = dp + args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
     elseif (flag < 0)
         W = dp - args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
-    elseif flag == 0 
+    elseif (flag == 0) 
         W = dp + args.coeffNL*0.25*(args.dt)*args.dt*(args.k').^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dp));
     end
 end
@@ -291,12 +298,19 @@ end
 function dj = compute_derivatives_j(u,y,p,args)%do not forget time in inner product
     %p: row = time, column = space
     %dj = -dt/2*Bstar*p(1+ Einv);
-    dj = ((args.matrices.BT)*(p.spatial)')';%each column is B*p(t_i)
-    dj = fft(dj')';
-    
-    for i = 3:args.nmax
-        dj(i,:) = (dj(i,:)').*(1 + args.Einv);
+    %dj = ((args.matrices.BT)*(p.spatial)')';%each column is B*p(t_i)
+    %pspatial = ifft(p.spec,[],2);
+    %pspatial = p.spatial;
+    %dj = ((args.matrices.BT)*(pspatial)')';%each column is B*p(t_i)
+    %dj = fft(dj,[],2);
+    %(p.spec)*args.Einv;
+    dj = zeros(size(p.spec));
+    dj(1,:) = (args.matrices.BT)*ifft(p.spec(2,:)'.*args.Einv);
+    for i = 2:args.nmax
+        dj(i,:) = (args.matrices.BT)*(ifft(p.spec(i,:)' + p.spec(i+1,:)'.*args.Einv));
     end
+    dj(end,:) = (args.matrices.BT)*ifft(p.spec(end,:)');
+    dj = (fft(dj,[],2));
     dj = -0.5*args.dt*dj(:);%makes a vector
 end
     

@@ -8,27 +8,27 @@ g = compute_derivatives_j(u, y, z, args);
 fprintf('Derivative ok \n')
 %dup = du(1:end-1,:);% last step does not count - adjoint has nmax +1 steps while state has nmax+2
 %du = ((args.matrices.B)*(u)')';
-du = fft(du,[],2);
-jprime = g'*du(:);
-jprime = sum(g.*du(:));
+fftdu = fft(du,[],2);
+jprime = g'*fftdu(:);
+%jprime = sum(g.*fftdu(:));
 
-for i = 1:10
+for i = -2:10
     epsilon = sqrt(10)^(-(i-1));
     
     up = u + epsilon*du;
     yp = solveState(up, args);
     jp = compute_j(up, yp, args);
-    fprintf('jp ok \n')
+    %fprintf('jp ok \n')
 
     um = u - epsilon*du; 
     ym = solveState(um, args);
     jm = compute_j(um, ym, args);
-    fprintf('jm ok \n')
+    %fprintf('jm ok \n')
     
     %jprime = g'*dq;
     jdiff = 0.5*(jp - jm) / epsilon;
-    rerr(i) = abs(jprime - jdiff) / abs(jprime);
-    fprintf('jp: %f, difference quot.: %f, rel. err.: %e\n', jprime, jdiff, rerr(i));
+    rerr(i+3) = abs(jprime - jdiff) / abs(jprime);
+    fprintf('jp: %f, difference quot.: %f, rel. err.: %e\n', jprime, jdiff, rerr(i+3));
 end
 
 semilogy(rerr);

@@ -8,7 +8,7 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
 
     % control domain
     controldomain = zeros(1,args.N);
-    controldomain(1:(end)) = 1.0;
+    controldomain(1:end) = 1.0;
     %controldomain(floor(5*(args.N+1)/8.0):floor(7*(args.N+1)/8.0)) = 1.0;
     [chi, chiT] = ComputeControlMatrix2(controldomain,args);
     args.matrices.B = chi;
@@ -16,7 +16,7 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
     
     
     %% Uncomment if you want to check gradient/hessian
-    u = 0.01*ones(args.nmax+1, args.N);
+    u = 2.0*ones(args.nmax+1, args.N);
     CheckGradient(u, u, @solveState, @solveAdjoint, ...
     @compute_j, @compute_derivatives_j, args);
 
@@ -76,9 +76,9 @@ function args = CreateParameters()
 
     % Mesh
     args.D = 5*pi; %domain is -5pi..5pi
-    args.N = 256; %number of points
+    args.N = 160; %number of points
     args.x = linspace(-args.D,args.D,args.N);
-    args.k = [0:args.N/2-1 0 -args.N/2+1:-1]*2*pi/(2*args.D); % frequency grid
+    args.k = [0:args.N/2-1 -args.N/2:-1]*2*pi/(2*args.D); % frequency grid
     args.npoints = size(args.x,2);
     args.spacestep = args.x(2)-args.x(1);
     args.ncells = args.npoints-1;
@@ -106,7 +106,7 @@ function args = CreateParameters()
     args.Einv = exp(args.dt*ik3);
 
     % Misc
-    args.coeffNL = 0.0;
+    args.coeffNL = 1.0;
     
     % default init
     args.y0 = zeros(1,args.N)';
@@ -118,13 +118,13 @@ function args = CreateParameters()
     args.gamma = 1.0;
     args.epsilon = 1e-12;
     % For fsolve
-    args.optimOptState.TolFun = 1e-6;
+    args.optimOptState.TolFun = 1e-8;
     args.optimOptState.Jacobian = 'on';
     args.optimOptState.Display = 'off';
     args.optimOptState.Algorithm = 'trust-region-reflective';
     args.optimOptState.JacobMult = @(Jinfo,y,flag)jmfunState(Jinfo,y,flag,args);
     
-    args.optimOptAdjoint.TolFun = 1e-6;
+    args.optimOptAdjoint.TolFun = 1e-8;
     args.optimOptAdjoint.Jacobian = 'on';
     args.optimOptAdjoint.Display = 'off';
     args.optimOptAdjoint.Algorithm = 'trust-region-reflective';
@@ -159,21 +159,21 @@ BT = B';
 end
 
 function exp = explicitpartState(y,u,up,args)
-    exp = args.E.*y + 0.5*args.dt*(args.E.*u + args.coeffNL*args.g.*args.E.*fft(ifft(y).^2) + up);
+    exp = args.E.*y + 0.5*args.dt*(args.E.*u + args.coeffNL*args.g.*args.E.*fft(real(ifft(y)).^2) + up);
 end
 
 function [F,Jinfo] = fsolverState(y,b,args)
-    F = y - args.coeffNL*0.5*args.dt*args.g.*fft(ifft(y).^2) - b;
+    F = y - args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(y)).^2) - b;
     Jinfo = y;
 end
 
 function W = jmfunState(Jinfo,dy,flag,args)
     if(flag > 0)
-        W = dy - args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dy));
+        W = dy - args.coeffNL*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dy)));
     elseif (flag < 0)
-        W = dy + args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dy));
+        W = dy + args.coeffNL*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dy)));
     elseif(flag == 0) 
-        W = dy + args.coeffNL*0.25*(args.dt)*args.dt*(args.k').^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dy));
+        W = dy + args.coeffNL*0.25*(args.dt)*args.dt*(args.k').^2.*fft(real(ifft(Jinfo)).*real(ifft(Jinfo)).*real(ifft(dy)));
     end
 end
 
@@ -203,8 +203,8 @@ function [y] = solveState(u,args)%CN scheme in time
     for i=2:nmax+1
         b = explicitpartState(yspeci,fftu(i-1,:)', fftu(i,:)',args);
         yspeci = fsolve(@(x) fsolverState(x,b,args),yspeci,args.optimOptState);
-        %yi = real(ifft(yspeci));
-        yi = (ifft(yspeci));
+        yi = real(ifft(yspeci));
+        %yi = (ifft(yspeci));
         y.spec(i,:) = yspeci;
         y.spatial(i,:) = yi;
     end
@@ -230,8 +230,8 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     fftrhs = fft(rhs);
     b = -0.5*args.dt*fftrhs;
     pspeci = fsolve(@(x) fsolverAdjoint(x,y.spec(end,:)',b,args),p.spec(1,:)',args.optimOptAdjoint);
-    %pi = real(ifft(pspeci));
-    pi = (ifft(pspeci));
+    pi = real(ifft(pspeci));
+    %pi = (ifft(pspeci));
     p.spec(1,:) = pspeci;
     p.spatial(1,:) = pi;
     
@@ -239,10 +239,10 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     for i=2:nmax
         rhs = args.matrices.Obs*(yrev(i,:)'- yobsrev(i,:)');
         fftrhs = fft(rhs);
-        b = explicitpartAdjoint(pspeci,yrev(i,:)',fftrhs,args);
-        pspeci = fsolve(@(x) fsolverAdjoint(x,yrev(i,:)',b,args),pspeci,args.optimOptAdjoint);
-        %pi = real(ifft(pspeci));
-        pi = (ifft(pspeci));
+        b = explicitpartAdjoint(pspeci,yspecrev(i,:)',fftrhs,args);
+        pspeci = fsolve(@(x) fsolverAdjoint(x,yspecrev(i,:)',b,args),pspeci,args.optimOptAdjoint);
+        pi = real(ifft(pspeci));
+        %pi = (ifft(pspeci));
         p.spec(i,:) = pspeci;
         p.spatial(i,:) = pi;
     end
@@ -250,10 +250,10 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     %last time step
     rhs = args.matrices.Obs*(yrev(end,:)'- yobsrev(end,:)');
     fftrhs = fft(rhs);
-    pspeci = args.Einv.*pspeci - args.coeffNL*args.dt*args.g.*args.Einv.*fft(ifft(pspeci).*ifft(yrev(end,:)'))...
+    pspeci = args.Einv.*pspeci - args.coeffNL*args.dt*args.g.*args.Einv.*fft(real(ifft(pspeci)).*real(ifft(yspecrev(end,:)')))...
          -0.5*args.dt*fftrhs;
-    %pi = real(ifft(pspeci));
-    pi = (ifft(pspeci));
+    pi = real(ifft(pspeci));
+    %pi = (ifft(pspeci));
     p.spec(end,:) = pspeci;
     p.spatial(end,:) = pi;
     p.spec = p.spec(end:-1:1,:);
@@ -261,22 +261,22 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
 end
 
 function exp = explicitpartAdjoint(p,y,discr,args)
-    exp = args.Einv.*p - args.coeffNL*args.dt*args.g.*args.Einv.*fft(ifft(p).*ifft(y))...
+    exp = args.Einv.*p - args.coeffNL*args.dt*args.g.*args.Einv.*fft(real(ifft(p)).*real(ifft(y)))...
          - args.dt*discr;
 end
 
 function [F,Jinfo] = fsolverAdjoint(p,y,b,args)
-    F = p + args.coeffNL*args.dt*args.g.*fft(ifft(p).*ifft(y)) - b;
+    F = p + args.coeffNL*args.dt*args.g.*fft(real(ifft(p)).*real(ifft(y))) - b;
     Jinfo = y;
 end
 
 function W = jmfunAdjoint(Jinfo,dp,flag,args)
     if (flag > 0)
-        W = dp + args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
+        W = dp + args.coeffNL*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dp)));
     elseif (flag < 0)
-        W = dp - args.coeffNL*args.dt*args.g.*fft(ifft(Jinfo).*ifft(dp));
-    elseif (flag == 0) 
-        W = dp + args.coeffNL*0.25*(args.dt)*args.dt*(args.k').^2.*fft(ifft(Jinfo).*ifft(Jinfo).*ifft(dp));
+        W = dp - args.coeffNL*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dp)));
+    elseif (flag == 0)
+        W = dp + args.coeffNL*0.25*(args.dt)*args.dt*(args.k').^2.*fft(real(ifft(Jinfo)).*real(ifft(Jinfo)).*real(ifft(dp)));
     end
 end
 
@@ -284,15 +284,15 @@ function j = compute_j(u,y,args)
     j = 0;
     discr = args.matrices.Obs*(y.spatial(1,:)'-args.yobs(1,:)');
     ymyd = fft(discr);
-    j = j+ 0.5*0.5*args.dt*ymyd'*ymyd;
+    j = j+ 0.5*0.5*args.dt*(ymyd'*ymyd);
     for i=2:args.nmax
         discr = args.matrices.Obs*(y.spatial(i,:)'-args.yobs(i,:)');
         ymyd = fft(discr);
-        j = j+ 0.5*args.dt*ymyd'*ymyd;
+        j = j+ 0.5*args.dt*(ymyd'*ymyd);
     end
     discr = args.matrices.Obs*(y.spatial(end,:)'-args.yobs(end,:)');
     ymyd = fft(discr);
-    j = j+ 0.5*0.5*args.dt*ymyd'*ymyd;
+    j = j+ 0.5*0.5*args.dt*(ymyd'*ymyd);
 end
 
 function dj = compute_derivatives_j(u,y,p,args)%do not forget time in inner product

@@ -10,25 +10,31 @@ fprintf('Derivative ok \n')
 %du = ((args.matrices.B)*(u)')';
 fftdu = fft(du,[],2);
 jprime = g'*fftdu(:);
-%jprime = sum(g.*fftdu(:));
+%jprime = sum(g.*fftdu(:))
 
-for i = -2:10
+for i = 1:10
     epsilon = sqrt(10)^(-(i-1));
     
     up = u + epsilon*du;
     yp = solveState(up, args);
-    jp = compute_j(up, yp, args);
+    jp = compute_j(up, yp, args)
     %fprintf('jp ok \n')
 
     um = u - epsilon*du; 
     ym = solveState(um, args);
-    jm = compute_j(um, ym, args);
+    jm = compute_j(um, ym, args)
     %fprintf('jm ok \n')
     
-    %jprime = g'*dq;
+    figure(1);
+    hold on;
+    plot(yp.spatial(end,:));
+    plot(ym.spatial(end,:));
+    drawnow()
+    hold off;
+    
     jdiff = 0.5*(jp - jm) / epsilon;
-    rerr(i+3) = abs(jprime - jdiff) / abs(jprime);
-    fprintf('jp: %f, difference quot.: %f, rel. err.: %e\n', jprime, jdiff, rerr(i+3));
+    rerr(i) = abs(jprime - jdiff) / abs(jprime);
+    fprintf('jp: %f, difference quot.: %f, rel. err.: %e\n', jprime, jdiff, rerr(i));
 end
 
 semilogy(rerr);

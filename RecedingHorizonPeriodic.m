@@ -2,6 +2,7 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
 
     ClearClose();
     args = CreateParameters();
+    args.dealiasing = 1;
     
     % observation domain
     args.matrices.Obs = ComputeObservationMatrix(1,args.N,args);
@@ -16,11 +17,16 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
     
     
     %% Uncomment if you want to check gradient/hessian
-    u = 2.0*ones(args.nmax+1, args.N);
+    u =zeros(args.nmax+1, args.N);
+    %u(:,args.N/4+2:end-args.N/4) = 1.0 ;
+    for i=1:args.nmax+1
+        u(i,:) = exp(-(args.x+5*pi).^2);
+    end
+    %u = 0.1*ones(args.nmax+1, args.N);
     CheckGradient(u, u, @solveState, @solveAdjoint, ...
     @compute_j, @compute_derivatives_j, args);
 
-    args.kappa = 0.70;
+    args.kappa = 0.50;
     args.x0 = -2.0;
     args.y0 = 12*args.kappa^2*sech(args.kappa*(args.x - args.x0)).^2;%valeurs aux chebypoints
     args.y0 = args.y0';
@@ -78,7 +84,7 @@ function args = CreateParameters()
     args.D = 5*pi; %domain is -5pi..5pi
     args.N = 160; %number of points
     args.x = linspace(-args.D,args.D,args.N);
-    args.k = [0:args.N/2-1 -args.N/2:-1]*2*pi/(2*args.D); % frequency grid
+    args.k = [0:args.N/2-1 0 -args.N/2+1:-1]*2*pi/(2*args.D); % frequency grid
     args.npoints = size(args.x,2);
     args.spacestep = args.x(2)-args.x(1);
     args.ncells = args.npoints-1;
@@ -101,7 +107,7 @@ function args = CreateParameters()
     
     %% Useful constants
     ik3 = 1i*(args.k' - (args.k').^3);
-    args.g = -0.5*1i*(args.k');
+    args.g = 1i*(args.k');
     args.E = exp(-args.dt*ik3);
     args.Einv = exp(args.dt*ik3);
 
@@ -159,21 +165,32 @@ BT = B';
 end
 
 function exp = explicitpartState(y,u,up,args)
-    exp = args.E.*y + 0.5*args.dt*(args.E.*u + args.coeffNL*args.g.*args.E.*fft(real(ifft(y)).^2) + up);
+    exp = args.E.*y + 0.5*args.dt*(args.E.*u - args.coeffNL*0.5*args.g.*args.E.*fft(real(ifft(y)).^2) + up);
+    if(args.dealiasing==1)
+        exp(floor(args.N/8)+2:end - floor(args.N/8)+1) = 0.0;
+    end
 end
 
 function [F,Jinfo] = fsolverState(y,b,args)
-    F = y - args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(y)).^2) - b;
+    F = y  + args.coeffNL*0.5*args.dt*0.5*args.g.*fft(real(ifft(y)).^2) - b;
     Jinfo = y;
+    if(args.dealiasing==1)
+        F(floor(args.N/8)+2:end - floor(args.N/8)+1) = 0.0;
+        Jinfo(floor(args.N/8)+2:end - floor(args.N/8)+1) = 0.0;
+    end
 end
 
 function W = jmfunState(Jinfo,dy,flag,args)
     if(flag > 0)
-        W = dy - args.coeffNL*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dy)));
+        W = dy + args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dy)));
     elseif (flag < 0)
-        W = dy + args.coeffNL*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dy)));
-    elseif(flag == 0) 
-        W = dy + args.coeffNL*0.25*(args.dt)*args.dt*(args.k').^2.*fft(real(ifft(Jinfo)).*real(ifft(Jinfo)).*real(ifft(dy)));
+        W = dy - args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dy)));
+    elseif(flag == 0)
+        %fprintf('flag0 in state\n')
+        W = dy + args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dy)))...
+             - args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dy)))...
+             + args.coeffNL*0.25*(args.dt)^2*fft(real(ifft(Jinfo)).*...
+             ifft(-(args.g).^2.*fft(real(ifft(Jinfo)).*real(ifft(dy)))));
     end
 end
 
@@ -201,7 +218,7 @@ function [y] = solveState(u,args)%CN scheme in time
     yspeci = yspec0;
     %% Time loop
     for i=2:nmax+1
-        b = explicitpartState(yspeci,fftu(i-1,:)', fftu(i,:)',args);
+        b = explicitpartState(yspeci,transpose(fftu(i-1,:)), transpose(fftu(i,:)),args);
         yspeci = fsolve(@(x) fsolverState(x,b,args),yspeci,args.optimOptState);
         yi = real(ifft(yspeci));
         %yi = (ifft(yspeci));
@@ -229,7 +246,7 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     rhs = args.matrices.Obs*(y.spatial(end,:)'- args.yobs(end,:)');
     fftrhs = fft(rhs);
     b = -0.5*args.dt*fftrhs;
-    pspeci = fsolve(@(x) fsolverAdjoint(x,y.spec(end,:)',b,args),p.spec(1,:)',args.optimOptAdjoint);
+    pspeci = fsolve(@(x) fsolverAdjoint(x,transpose(y.spec(end,:)),b,args),transpose(p.spec(1,:)),args.optimOptAdjoint);
     pi = real(ifft(pspeci));
     %pi = (ifft(pspeci));
     p.spec(1,:) = pspeci;
@@ -239,8 +256,8 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     for i=2:nmax
         rhs = args.matrices.Obs*(yrev(i,:)'- yobsrev(i,:)');
         fftrhs = fft(rhs);
-        b = explicitpartAdjoint(pspeci,yspecrev(i,:)',fftrhs,args);
-        pspeci = fsolve(@(x) fsolverAdjoint(x,yspecrev(i,:)',b,args),pspeci,args.optimOptAdjoint);
+        b = explicitpartAdjoint(pspeci,transpose(yspecrev(i,:)),fftrhs,args);
+        pspeci = fsolve(@(x) fsolverAdjoint(x,transpose(yspecrev(i,:)),b,args),pspeci,args.optimOptAdjoint);
         pi = real(ifft(pspeci));
         %pi = (ifft(pspeci));
         p.spec(i,:) = pspeci;
@@ -250,10 +267,12 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     %last time step
     rhs = args.matrices.Obs*(yrev(end,:)'- yobsrev(end,:)');
     fftrhs = fft(rhs);
-    pspeci = args.Einv.*pspeci - args.coeffNL*args.dt*args.g.*args.Einv.*fft(real(ifft(pspeci)).*real(ifft(yspecrev(end,:)')))...
+    pspeci = args.Einv.*pspeci + args.coeffNL*0.5*args.dt*fft(real(ifft(args.Einv.*args.g.*pspeci)).*real(ifft(transpose(yspecrev(end,:)))))...
          -0.5*args.dt*fftrhs;
+    %pspeci = args.Einv.*pspeci - args.coeffNL*args.dt*args.g.*args.Einv.*fft(real(ifft(pspeci)).*real(ifft(yspecrev(end,:)')))...
+    %  -0.5*args.dt*fftrhs;
     pi = real(ifft(pspeci));
-    %pi = (ifft(pspeci));
+    %     %pi = (ifft(pspeci));
     p.spec(end,:) = pspeci;
     p.spatial(end,:) = pi;
     p.spec = p.spec(end:-1:1,:);
@@ -261,22 +280,31 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
 end
 
 function exp = explicitpartAdjoint(p,y,discr,args)
-    exp = args.Einv.*p - args.coeffNL*args.dt*args.g.*args.Einv.*fft(real(ifft(p)).*real(ifft(y)))...
+    exp = args.Einv.*p + args.coeffNL*0.5*args.dt*fft(real(ifft(args.g.*args.Einv.*p)).*real(ifft(y)))...
          - args.dt*discr;
+     if(args.dealiasing==1)
+        exp(floor(args.N/8)+2:end - floor(args.N/8)+1) = 0.0;
+     end
 end
 
 function [F,Jinfo] = fsolverAdjoint(p,y,b,args)
-    F = p + args.coeffNL*args.dt*args.g.*fft(real(ifft(p)).*real(ifft(y))) - b;
+    F = p - args.coeffNL*0.5*args.dt*fft(real(ifft(args.g.*p)).*real(ifft(y))) - b;
     Jinfo = y;
+    if(args.dealiasing==1)
+        F(floor(args.N/8)+2:end - floor(args.N/8)+1) = 0.0;
+        Jinfo(floor(args.N/8)+2:end - floor(args.N/8)+1) = 0.0;
+     end
 end
 
 function W = jmfunAdjoint(Jinfo,dp,flag,args)
     if (flag > 0)
-        W = dp + args.coeffNL*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dp)));
+        W = dp - args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dp)));
     elseif (flag < 0)
-        W = dp - args.coeffNL*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dp)));
+        W = dp + args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dp)));
     elseif (flag == 0)
-        W = dp + args.coeffNL*0.25*(args.dt)*args.dt*(args.k').^2.*fft(real(ifft(Jinfo)).*real(ifft(Jinfo)).*real(ifft(dp)));
+        W = dp - args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dp)))...
+            + args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dp)))...
+            - args.coeffNL*0.25*args.dt^2*args.g.*fft(real(ifft(Jinfo)).*real(ifft(Jinfo)).*real(ifft(args.g.*dp)));
     end
 end
 
@@ -305,11 +333,11 @@ function dj = compute_derivatives_j(u,y,p,args)%do not forget time in inner prod
     %dj = fft(dj,[],2);
     %(p.spec)*args.Einv;
     dj = zeros(size(p.spec));
-    dj(1,:) = (args.matrices.BT)*ifft(p.spec(2,:)'.*args.Einv);
+    dj(1,:) = (args.matrices.BT)*(ifft(transpose(p.spec(2,:)).*args.Einv));
     for i = 2:args.nmax
-        dj(i,:) = (args.matrices.BT)*(ifft(p.spec(i,:)' + p.spec(i+1,:)'.*args.Einv));
+        dj(i,:) = (args.matrices.BT)*((ifft(transpose(p.spec(i,:)) + transpose(p.spec(i+1,:)).*args.Einv)));
     end
-    dj(end,:) = (args.matrices.BT)*ifft(p.spec(end,:)');
+    dj(end,:) = (args.matrices.BT)*((ifft(transpose(p.spec(end,:)))));
     dj = (fft(dj,[],2));
     dj = -0.5*args.dt*dj(:);%makes a vector
 end

@@ -111,8 +111,8 @@ function args = CreateParameters()
     args.Einv = exp(args.dt*ik3);
 
     % Misc
-    args.coeffNL = 1.0;
-    args.dealiasing = 0;
+    args.coeffNL = 0.0;
+    args.dealiasing = 1;
     
     % default init
     args.y0 = zeros(1,args.N)';
@@ -123,7 +123,8 @@ function args = CreateParameters()
     % Optimization parameters
     args.gamma = 1.0;
     args.epsilon = 1e-12;
-    % For fsolve
+    
+    % For fsolve   
     args.optimOptState.TolFun = 1e-8;
     args.optimOptState.Jacobian = 'on';
     args.optimOptState.Display = 'off';
@@ -190,32 +191,40 @@ function [F,Jinfo] = fsolverState(y,b,args)
     %end
 end
 
-function W = jmfunState(Jinfo,dy,flag,args)
-    if(flag > 0)
-        aux = args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dy)));
-        if(args.dealiasing==1)
-            aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+function W = jmfunState(Jinfo,Dy,flag,args)
+
+    for j=1:size(Dy,2)
+        dy = Dy(:,j);
+        if(flag > 0)
+            aux = args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dy)));
+            if(args.dealiasing==1)
+                aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+            end
+            W(:,j) = dy + aux;
+        elseif (flag < 0)
+            aux = args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dy)));
+            if(args.dealiasing==1)
+                aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+            end
+            W(:,j) = dy - aux;
+        elseif(flag == 0)
+            %size(args.g)
+            %size(Jinfo)
+            %size(dy)
+            %xxxxxxxxxx = 0
+            aux1 = args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dy)));
+            aux2 = args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dy)));
+            aux3 = args.coeffNL*0.25*(args.dt)^2*fft(real(ifft(Jinfo)).*...
+                 ifft(-(args.g).^2.*fft(real(ifft(Jinfo)).*real(ifft(dy)))));
+            if(args.dealiasing==1)
+                aux1(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+                aux2(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+                aux3(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+            end
+            W(:,j) = dy + aux1...
+            - aux2...
+            + aux3;
         end
-        W = dy + aux;
-    elseif (flag < 0)
-        aux = args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dy)));
-        if(args.dealiasing==1)
-            aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-        end
-        W = dy - aux;
-    elseif(flag == 0)
-        aux1 = args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dy)));
-        aux2 = args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dy)));
-        aux3 = args.coeffNL*0.25*(args.dt)^2*fft(real(ifft(Jinfo)).*...
-             ifft(-(args.g).^2.*fft(real(ifft(Jinfo)).*real(ifft(dy)))));
-        if(args.dealiasing==1)
-            aux1(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-            aux2(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-            aux3(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-        end
-        W = dy + aux1...
-        - aux2...
-        + aux3;
     end
 end
 
@@ -244,7 +253,7 @@ function [y] = solveState(u,args)%CN scheme in time
     %% Time loop
     for i=2:nmax+1
         b = explicitpartState(yspeci,transpose(fftu(i-1,:)), transpose(fftu(i,:)),args);
-        yspeci = fsolve(@(x) fsolverState(x,b,args),yspeci,args.optimOptState);
+        [yspeci,fmin,exitflag] = fsolve(@(x) fsolverState(x,b,args),yspeci,args.optimOptState);
         yi = real(ifft(yspeci));
         y.spec(i,:) = yspeci;
         y.spatial(i,:) = yi;
@@ -325,32 +334,36 @@ function [F,Jinfo] = fsolverAdjoint(p,y,b,args)
     %end
 end
 
-function W = jmfunAdjoint(Jinfo,dp,flag,args)
+function W = jmfunAdjoint(Jinfo,Dp,flag,args)
+
+for j=1:size(Dp,2)
+    dp = Dp(:,j);
     if (flag > 0)
         aux = args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dp)));
-        if(args.derdealiasing==1)
+        if(args.dealiasing==1)
             aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
         end
-        W = dp - aux;
+        W(:,j) = dp - aux;
     elseif (flag < 0)
         aux = args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dp)));
-        if(args.derdealiasing==1)
+        if(args.dealiasing==1)
             aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
         end
-        W = dp + aux;
+        W(:,j) = dp + aux;
     elseif (flag == 0)
         aux1 = args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dp)));
         aux2 = args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dp)));
         aux3 = args.coeffNL*0.25*args.dt^2*args.g.*fft(real(ifft(Jinfo)).*real(ifft(Jinfo)).*real(ifft(args.g.*dp)));
-       if(args.derdealiasing==1)
+       if(args.dealiasing==1)
             aux1(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
             aux2(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
             aux3(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
        end
-        W = dp - aux1...
+        W(:,j) = dp - aux1...
         + aux2...
         - aux3;
     end
+end    
 end
 
 function j = compute_j(u,y,args)
@@ -363,17 +376,17 @@ function j = compute_j(u,y,args)
     discr = args.matrices.Obs*(y.spatial(1,:)'-args.yobs(1,:)');
     ymyd = fft(discr);
     j = j+ 0.5*0.5*args.dt*(ymyd'*ymyd);
-    j = j+ 0.5*args.gamma*0.5*args.dt*fftu(1,:)*fftu(1,:)';
+    %j = j+ 0.5*args.gamma*0.5*args.dt*fftu(1,:)*fftu(1,:)';
     for i=2:args.nmax
         discr = args.matrices.Obs*(y.spatial(i,:)'-args.yobs(i,:)');
         ymyd = fft(discr);
         j = j+ 0.5*args.dt*(ymyd'*ymyd);
-        j = j+ 0.5*args.gamma*args.dt*fftu(i,:)*fftu(i,:)';
+        %j = j+ 0.5*args.gamma*args.dt*fftu(i,:)*fftu(i,:)';
     end
     discr = args.matrices.Obs*(y.spatial(end,:)'-args.yobs(end,:)');
     ymyd = fft(discr);
     j = j+ 0.5*0.5*args.dt*(ymyd'*ymyd);
-    j = j+ 0.5*args.gamma*0.5*args.dt*fftu(end,:)*fftu(end,:)';
+    %j = j+ 0.5*args.gamma*0.5*args.dt*fftu(end,:)*fftu(end,:)';
 end
 
 function dj = compute_derivatives_j(u,y,p,args)%do not forget time in inner product
@@ -396,11 +409,11 @@ function dj = compute_derivatives_j(u,y,p,args)%do not forget time in inner prod
     dj = (fft(dj,[],2));
     
     %%second part
-    dj(1,:) = dj(1,:) + 0.5*args.dt*args.gamma*fftu(1,:);
-    for i = 2:args.nmax
-        dj(i,:) = dj(i,:) + args.dt*args.gamma*fftu(i,:);
-    end
-    dj(end,:) = dj(end,:)  + 0.5*args.dt*args.gamma*fftu(end,:);
-    dj = dj(:);
+%     dj(1,:) = dj(1,:) + 0.5*args.dt*args.gamma*fftu(1,:);
+%     for i = 2:args.nmax
+%         dj(i,:) = dj(i,:) + args.dt*args.gamma*fftu(i,:);
+%     end
+%     dj(end,:) = dj(end,:)  + 0.5*args.dt*args.gamma*fftu(end,:);
+     dj = dj(:);
 end
     

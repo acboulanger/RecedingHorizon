@@ -1,4 +1,4 @@
-function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
+function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodicNewtonSolve()
 
     ClearClose();
     args = CreateParameters();
@@ -16,14 +16,14 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
     
     
     %% Uncomment if you want to check gradient/hessian
-    u =zeros(args.nmax+1, args.N);
-    u(:,args.N/4+2:end-args.N/4) = 1.0 ;
-    %for i=1:args.nmax+1
-    %    u(i,:) = exp(-(args.x+5*pi).^2);
-    %end
-    %u = 0.1*ones(args.nmax+1, args.N);
-    CheckGradient(u, u, @solveState, @solveAdjoint, ...
-    @compute_j, @compute_derivatives_j, args);
+     u =zeros(args.nmax+1, args.N);
+     u(:,args.N/4+2:end-args.N/4) = 1.0 ;
+%     %for i=1:args.nmax+1
+%     %    u(i,:) = exp(-(args.x+5*pi).^2);
+%     %end
+%     %u = 0.1*ones(args.nmax+1, args.N);
+     CheckGradient(u, u, @solveState, @solveAdjoint, ...
+     @compute_j, @compute_derivatives_j, args);
 
     args.kappa = 0.50;
     args.x0 = -2.0;
@@ -111,7 +111,7 @@ function args = CreateParameters()
     args.Einv = exp(args.dt*ik3);
 
     % Misc
-    args.coeffNL = 1.0;
+    args.coeffNL = 0.0;
     args.dealiasing = 1;
     
     % default init
@@ -166,57 +166,26 @@ function [B,BT] = ComputeControlMatrix2(controldomain,args)
 BT = B';  
 end
 
-function exp = explicitpartState(y,u,up,args)
+function [F] = fSolverState(yp,y,u,up,args)
     aux = args.coeffNL*0.5*args.g.*args.E.*fft(real(ifft(y)).^2);
     if(args.dealiasing==1)
         aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
     end
     exp = args.E.*y + 0.5*args.dt*(args.E.*u - aux + up);
-    if(args.dealiasing==1)
-        exp(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-    end
-end
-
-function [F,Jinfo] = fsolverState(y,b,args)
-    aux = args.coeffNL*0.5*args.dt*0.5*args.g.*fft(real(ifft(y)).^2);
+    
+    aux = args.coeffNL*0.5*args.dt*0.5*args.g.*fft(real(ifft(yp)).^2);
     if(args.dealiasing==1)
        aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
     end
-    F = y  + aux - b;
-    Jinfo = y;
-    %if(args.dealiasing==1)
-    %   F(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-    %   Jinfo(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-    %end
+    F = yp  + aux - exp;
 end
 
-function W = jmfunState(Jinfo,dy,flag,args)
-    if(flag > 0)
-        aux = args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dy)));
+function dF = gradSolverState(dy,y0,args)
+        aux = args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(y0)).*real(ifft(dy)));
         if(args.dealiasing==1)
             aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
         end
-        W = dy + aux;
-    elseif (flag < 0)
-        aux = args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dy)));
-        if(args.dealiasing==1)
-            aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-        end
-        W = dy - aux;
-    elseif(flag == 0)
-        aux1 = args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dy)));
-        aux2 = args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dy)));
-        aux3 = args.coeffNL*0.25*(args.dt)^2*fft(real(ifft(Jinfo)).*...
-             ifft(-(args.g).^2.*fft(real(ifft(Jinfo)).*real(ifft(dy)))));
-        if(args.dealiasing==1)
-            aux1(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-            aux2(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-            aux3(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-        end
-        W = dy + aux1...
-        - aux2...
-        + aux3;
-    end
+        dF = dy + aux;
 end
 
 function [y] = solveState(u,args)%CN scheme in time
@@ -243,8 +212,19 @@ function [y] = solveState(u,args)%CN scheme in time
     yspeci = yspec0;
     %% Time loop
     for i=2:nmax+1
-        b = explicitpartState(yspeci,transpose(fftu(i-1,:)), transpose(fftu(i,:)),args);
-        yspeci = fsolve(@(x) fsolverState(x,b,args),yspeci,args.optimOptState);
+        yspecnew = yspeci;
+        F = fSolverState(yspecnew,yspeci,transpose(fftu(i-1,:)), transpose(fftu(i,:)),args);
+        count = 0;
+        while(norm(F) > 1e-6 && count < 100)%Newton Solver
+            %count = count +1
+            %norm(F)
+            grad = @(dy) gradSolverState(dy,yspecnew,args);
+            F = fSolverState(yspecnew,yspeci,transpose(fftu(i-1,:)), transpose(fftu(i,:)),args);
+            %[dy, flag, relres, cgiter] = pcg(grad, -F, 1e-6, 200);
+            [dy, flag] = gmres(grad,-F,10,1e-6,200);
+            yspecnew = yspecnew + dy;
+        end
+        yspeci = yspecnew;
         yi = real(ifft(yspeci));
         y.spec(i,:) = yspeci;
         y.spatial(i,:) = yi;
@@ -269,18 +249,39 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     %initial condition(implicit given only)
     rhs = args.matrices.Obs*(y.spatial(end,:)'- args.yobs(end,:)');
     fftrhs = fft(rhs);
-    b = -0.5*args.dt*fftrhs;
-    pspeci = fsolve(@(x) fsolverAdjoint(x,transpose(y.spec(end,:)),b,args),transpose(p.spec(1,:)),args.optimOptAdjoint);
+    count = 0;
+    pspeci = p.spec(1,:)';
+    pspecnew = pspeci;
+    F = fSolverState(pspecnew,zeros(size(pspeci)),transpose(yspecrev(1,:)),0.5*fftrhs,args);
+    while(norm(F) > 1e-6 && count < 100)%Newton Solver
+        grad = @(dp) gradSolverAdjoint(transpose(yspecrev(1,:)),dp,args);
+        F = fSolverState(pspecnew,zeros(size(pspeci)),transpose(yspecrev(1,:)),0.5*fftrhs,args);
+        [dp, flag, relres, cgiter] = pcg(grad, -F, 1e-6, 200);
+        %[dp, flag] = gmres(grad,-F,10,1e-6,200);
+        pspecnew = pspecnew + dp;
+    end
+    pspeci = pspecnew;
     pi = real(ifft(pspeci));
     p.spec(1,:) = pspeci;
     p.spatial(1,:) = pi;
     
     %% Time loop
     for i=2:nmax
+        pspecnew = pspeci;
         rhs = args.matrices.Obs*(yrev(i,:)'- yobsrev(i,:)');
         fftrhs = fft(rhs);
-        b = explicitpartAdjoint(pspeci,transpose(yspecrev(i,:)),fftrhs,args);
-        pspeci = fsolve(@(x) fsolverAdjoint(x,transpose(yspecrev(i,:)),b,args),pspeci,args.optimOptAdjoint);
+        count = 0;
+        F = fSolverState(pspecnew,pspeci,transpose(yspecrev(i,:)),fftrhs,args);
+        while(norm(F) > 1e-6 && count < 100)
+            count = count+1
+            norm(F)
+            grad = @(dp) gradSolverAdjoint(transpose(yspecrev(i,:)),dp,args);
+            F = fSolverState(pspecnew,pspeci,transpose(yspecrev(i,:)),fftrhs,args);
+            [dp, flag, relres, cgiter] = pcg(grad, -F, 1e-6, 200);
+            %[dp, flag] = gmres(grad,-F,10,1e-6,200);
+            pspecnew = pspecnew + dp;
+        end
+        pspeci = pspecnew;
         pi = real(ifft(pspeci));
         p.spec(i,:) = pspeci;
         p.spatial(i,:) = pi;
@@ -301,56 +302,28 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     p.spatial = p.spatial(end:-1:1,:);
 end
 
-function exp = explicitpartAdjoint(p,y,discr,args)
+
+function [F] = fsolverAdjoint(pp,p,y,discr,args)
     aux = args.coeffNL*0.5*args.dt*fft(real(ifft(args.g.*args.Einv.*p)).*real(ifft(y)));
     if(args.dealiasing==1)
         aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
     end
     exp = args.Einv.*p + aux - args.dt*discr;
-    %if(args.dealiasing==1)
-    %    exp(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-    %end
-end
 
-function [F,Jinfo] = fsolverAdjoint(p,y,b,args)
-    aux = args.coeffNL*0.5*args.dt*fft(real(ifft(args.g.*p)).*real(ifft(y)));
+
+    aux = args.coeffNL*0.5*args.dt*fft(real(ifft(args.g.*pp)).*real(ifft(y)));
     if(args.dealiasing==1)
         aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
     end
-    F = p - aux - b;
-    Jinfo = y;
-    %if(args.dealiasing==1)
-    %    F(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-    %    Jinfo(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-    %end
+    F = pp - aux - exp;
 end
 
-function W = jmfunAdjoint(Jinfo,dp,flag,args)
-    if (flag > 0)
-        aux = args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dp)));
-        if(args.derdealiasing==1)
+function W = gradSolverAdjoint(y,dp,args)
+        aux = args.coeffNL*0.5*args.dt*fft(real(ifft(y)).*real(ifft(args.g.*dp)));
+        if(args.dealiasing==1)
             aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
         end
         W = dp - aux;
-    elseif (flag < 0)
-        aux = args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dp)));
-        if(args.derdealiasing==1)
-            aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-        end
-        W = dp + aux;
-    elseif (flag == 0)
-        aux1 = args.coeffNL*0.5*args.dt*fft(real(ifft(Jinfo)).*real(ifft(args.g.*dp)));
-        aux2 = args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(Jinfo)).*real(ifft(dp)));
-        aux3 = args.coeffNL*0.25*args.dt^2*args.g.*fft(real(ifft(Jinfo)).*real(ifft(Jinfo)).*real(ifft(args.g.*dp)));
-       if(args.derdealiasing==1)
-            aux1(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-            aux2(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-            aux3(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
-       end
-        W = dp - aux1...
-        + aux2...
-        - aux3;
-    end
 end
 
 function j = compute_j(u,y,args)
@@ -363,17 +336,17 @@ function j = compute_j(u,y,args)
     discr = args.matrices.Obs*(y.spatial(1,:)'-args.yobs(1,:)');
     ymyd = fft(discr);
     j = j+ 0.5*0.5*args.dt*(ymyd'*ymyd);
-    j = j+ 0.5*args.gamma*0.5*args.dt*fftu(1,:)*fftu(1,:)';
+    j = j+ 0.0*0.5*args.gamma*0.5*args.dt*fftu(1,:)*fftu(1,:)';
     for i=2:args.nmax
         discr = args.matrices.Obs*(y.spatial(i,:)'-args.yobs(i,:)');
         ymyd = fft(discr);
         j = j+ 0.5*args.dt*(ymyd'*ymyd);
-        j = j+ 0.5*args.gamma*args.dt*fftu(i,:)*fftu(i,:)';
+        j = j+ 0.0*0.5*args.gamma*args.dt*fftu(i,:)*fftu(i,:)';
     end
     discr = args.matrices.Obs*(y.spatial(end,:)'-args.yobs(end,:)');
     ymyd = fft(discr);
     j = j+ 0.5*0.5*args.dt*(ymyd'*ymyd);
-    j = j+ 0.5*args.gamma*0.5*args.dt*fftu(end,:)*fftu(end,:)';
+    j = j+ 0.0*0.5*args.gamma*0.5*args.dt*fftu(end,:)*fftu(end,:)';
 end
 
 function dj = compute_derivatives_j(u,y,p,args)%do not forget time in inner product
@@ -396,11 +369,11 @@ function dj = compute_derivatives_j(u,y,p,args)%do not forget time in inner prod
     dj = (fft(dj,[],2));
     
     %%second part
-    dj(1,:) = dj(1,:) + 0.5*args.dt*args.gamma*fftu(1,:);
-    for i = 2:args.nmax
-        dj(i,:) = dj(i,:) + args.dt*args.gamma*fftu(i,:);
-    end
-    dj(end,:) = dj(end,:)  + 0.5*args.dt*args.gamma*fftu(end,:);
-    dj = dj(:);
+%     dj(1,:) = dj(1,:) + 0.5*args.dt*args.gamma*fftu(1,:);
+%     for i = 2:args.nmax
+%         dj(i,:) = dj(i,:) + args.dt*args.gamma*fftu(i,:);
+%     end
+%     dj(end,:) = dj(end,:)  + 0.5*args.dt*args.gamma*fftu(end,:);
+     dj = dj(:);
 end
     

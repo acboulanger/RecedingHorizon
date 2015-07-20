@@ -111,7 +111,7 @@ function args = CreateParameters()
     args.Einv = exp(args.dt*ik3);
 
     % Misc
-    args.coeffNL = 0.0;
+    args.coeffNL = 1.0;
     args.dealiasing = 1;
     
     % default init
@@ -169,13 +169,14 @@ end
 function [F] = fSolverState(yp,y,u,up,args)
     aux = args.coeffNL*0.5*args.g.*args.E.*fft(real(ifft(y)).^2);
     if(args.dealiasing==1)
-        aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+        %aux(floor(3*args.N/8)+2:end - floor(3*args.N/8)+1) = 0.0;
+        aux(floor(3*args.N/8)+2:end - floor(3*args.N/8)+1) = 0.0;
     end
     exp = args.E.*y + 0.5*args.dt*(args.E.*u - aux + up);
     
     aux = args.coeffNL*0.5*args.dt*0.5*args.g.*fft(real(ifft(yp)).^2);
     if(args.dealiasing==1)
-       aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+       aux(floor(3*args.N/8)+2:end - floor(3*args.N/8)+1) = 0.0;
     end
     F = yp  + aux - exp;
 end
@@ -183,7 +184,7 @@ end
 function dF = gradSolverState(dy,y0,args)
         aux = args.coeffNL*0.5*args.dt*args.g.*fft(real(ifft(y0)).*real(ifft(dy)));
         if(args.dealiasing==1)
-            aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+            aux(floor(3*args.N/8)+2:end - floor(3*args.N/8)+1) = 0.0;
         end
         dF = dy + aux;
 end
@@ -215,7 +216,7 @@ function [y] = solveState(u,args)%CN scheme in time
         yspecnew = yspeci;
         F = fSolverState(yspecnew,yspeci,transpose(fftu(i-1,:)), transpose(fftu(i,:)),args);
         count = 0;
-        while(norm(F) > 1e-6 && count < 100)%Newton Solver
+        while(norm(F) > 1e-8 && count < 100)%Newton Solver
             %count = count +1
             %norm(F)
             grad = @(dy) gradSolverState(dy,yspecnew,args);
@@ -255,9 +256,9 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     F = fSolverState(pspecnew,zeros(size(pspeci)),transpose(yspecrev(1,:)),0.5*fftrhs,args);
     while(norm(F) > 1e-6 && count < 100)%Newton Solver
         grad = @(dp) gradSolverAdjoint(transpose(yspecrev(1,:)),dp,args);
-        F = fSolverState(pspecnew,zeros(size(pspeci)),transpose(yspecrev(1,:)),0.5*fftrhs,args);
-        [dp, flag, relres, cgiter] = pcg(grad, -F, 1e-6, 200);
-        %[dp, flag] = gmres(grad,-F,10,1e-6,200);
+        F = fSolverAdjoint(pspecnew,zeros(size(pspeci)),transpose(yspecrev(1,:)),0.5*fftrhs,args);
+        %[dp, flag, relres, cgiter] = pcg(grad, -F, 1e-6, 200);
+        [dp, flag] = gmres(grad,-F,10,1e-6,200);
         pspecnew = pspecnew + dp;
     end
     pspeci = pspecnew;
@@ -272,13 +273,13 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
         fftrhs = fft(rhs);
         count = 0;
         F = fSolverState(pspecnew,pspeci,transpose(yspecrev(i,:)),fftrhs,args);
-        while(norm(F) > 1e-6 && count < 100)
-            count = count+1
-            norm(F)
+        while(norm(F) > 1e-8 && count < 100)
+            %count = count+1
+            %norm(F)
             grad = @(dp) gradSolverAdjoint(transpose(yspecrev(i,:)),dp,args);
-            F = fSolverState(pspecnew,pspeci,transpose(yspecrev(i,:)),fftrhs,args);
-            [dp, flag, relres, cgiter] = pcg(grad, -F, 1e-6, 200);
-            %[dp, flag] = gmres(grad,-F,10,1e-6,200);
+            F = fSolverAdjoint(pspecnew,pspeci,transpose(yspecrev(i,:)),fftrhs,args);
+            %[dp, flag, relres, cgiter] = pcg(grad, -F, 1e-6, 200);
+            [dp, flag] = gmres(grad,-F,10,1e-6,200);
             pspecnew = pspecnew + dp;
         end
         pspeci = pspecnew;
@@ -292,7 +293,7 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
     fftrhs = fft(rhs);
     aux = args.coeffNL*0.5*args.dt*fft(real(ifft(args.Einv.*args.g.*pspeci)).*real(ifft(transpose(yspecrev(end,:)))));
     if(args.dealiasing==1)
-        aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+        aux(floor(3*args.N/8)+2:end - floor(3*args.N/8)+1) = 0.0;
     end
     pspeci = args.Einv.*pspeci + aux - 0.5*args.dt*fftrhs;
     pi = real(ifft(pspeci));
@@ -303,17 +304,17 @@ function p = solveAdjoint(u,y,args)%CN scheme in time
 end
 
 
-function [F] = fsolverAdjoint(pp,p,y,discr,args)
+function [F] = fSolverAdjoint(pp,p,y,discr,args)
     aux = args.coeffNL*0.5*args.dt*fft(real(ifft(args.g.*args.Einv.*p)).*real(ifft(y)));
     if(args.dealiasing==1)
-        aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+        aux(floor(3*args.N/8)+2:end - floor(3*args.N/8)+1) = 0.0;
     end
     exp = args.Einv.*p + aux - args.dt*discr;
 
 
     aux = args.coeffNL*0.5*args.dt*fft(real(ifft(args.g.*pp)).*real(ifft(y)));
     if(args.dealiasing==1)
-        aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+        aux(floor(3*args.N/8)+2:end - floor(3*args.N/8)+1) = 0.0;
     end
     F = pp - aux - exp;
 end
@@ -321,7 +322,7 @@ end
 function W = gradSolverAdjoint(y,dp,args)
         aux = args.coeffNL*0.5*args.dt*fft(real(ifft(y)).*real(ifft(args.g.*dp)));
         if(args.dealiasing==1)
-            aux(floor(args.N/4)+2:end - floor(args.N/4)+1) = 0.0;
+            aux(floor(3*args.N/8)+2:end - floor(3*args.N/8)+1) = 0.0;
         end
         W = dp - aux;
 end

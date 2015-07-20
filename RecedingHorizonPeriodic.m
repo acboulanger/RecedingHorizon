@@ -112,7 +112,7 @@ function args = CreateParameters()
 
     % Misc
     args.coeffNL = 1.0;
-    args.dealiasing = 1;
+    args.dealiasing = 0;
     
     % default init
     args.y0 = zeros(1,args.N)';
@@ -125,18 +125,18 @@ function args = CreateParameters()
     args.epsilon = 1e-12;
     % For fsolve
     args.optimOptState.TolFun = 1e-8;
-    args.optimOptState.Jacobian = 'off';
+    args.optimOptState.Jacobian = 'on';
     args.optimOptState.Display = 'off';
-    %args.optimOptState.Algorithm = 'trust-region-reflective';
-    %args.optimOptState.TolPCG = 1e-6;
-    %args.optimOptState.JacobMult = @(Jinfo,y,flag)jmfunState(Jinfo,y,flag,args);
+    args.optimOptState.Algorithm = 'trust-region-reflective';
+    args.optimOptState.TolPCG = 1e-6;
+    args.optimOptState.JacobMult = @(Jinfo,y,flag)jmfunState(Jinfo,y,flag,args);
     
     args.optimOptAdjoint.TolFun = 1e-8;
-    args.optimOptAdjoint.Jacobian = 'off';
+    args.optimOptAdjoint.Jacobian = 'on';
     args.optimOptAdjoint.Display = 'off';
-    %args.optimOptAdjoint.Algorithm = 'trust-region-reflective';
-    %args.optimOptAdjoint.TolPCG = 1e-6;
-    %args.optimOptAdjoint.JacobMult = @(Jinfo,dp,flag)jmfunAdjoint(Jinfo,dp,flag,args)
+    args.optimOptAdjoint.Algorithm = 'trust-region-reflective';
+    args.optimOptAdjoint.TolPCG = 1e-6;
+    args.optimOptAdjoint.JacobMult = @(Jinfo,dp,flag)jmfunAdjoint(Jinfo,dp,flag,args);
 end
 
 function [Obs] = ComputeObservationMatrix(i1,i2,args)

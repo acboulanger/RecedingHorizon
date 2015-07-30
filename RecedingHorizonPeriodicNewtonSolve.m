@@ -112,7 +112,7 @@ function args = CreateParameters()
 
     % Misc
     args.coeffNL = 1.0;
-    args.dealiasing = 1;
+    args.dealiasing = 0;
     
     % default init
     args.y0 = zeros(1,args.N)';

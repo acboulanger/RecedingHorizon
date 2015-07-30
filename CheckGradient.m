@@ -9,7 +9,7 @@ fprintf('Derivative ok \n')
 %dup = du(1:end-1,:);% last step does not count - adjoint has nmax +1 steps while state has nmax+2
 %du = ((args.matrices.B)*(u)')';
 fftdu = fft(du,[],2);
-jprime = g'*fftdu(:);
+jprime = g'*args.Mass*fftdu(:);
 %jprime = sum(g.*fftdu(:))
 
 for i = 1:10

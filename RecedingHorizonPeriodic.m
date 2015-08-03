@@ -67,7 +67,7 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
             args.y0 = args.y0';
         end
         %run optimization process bis T;
-        [y,p,u,args] = solveOptimization((irh-1)*args.deltarh,args);
+        [y,p,u,args] = solveOptimizationGlobal((irh-1)*args.deltarh,args);
         
         %keep data only until deltarh
         ykeep = y.spatial(1:args.nkeep,:);
@@ -89,7 +89,7 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonPeriodic()
             pconcat(end,:) = pkeep(end,:);
             uconcat(end,:) = ukeep(end,:);
         end
-        myvisu(1,yconcat,pconcat,uconcat,args);
+    myvisu(1,yconcat,pconcat,uconcat,args);
         %visunormL2(2,yconcat,args);
     end%end loop on deltas
     %myvisu(1,yconcat,pconcat,uconcat,args);
@@ -133,7 +133,7 @@ function args = CreateParameters()
     %Receding horizon
     args.deltarh = 1.0;
     args.T = 1.5;
-    args.Tinf = 500.0;
+    args.Tinf = 50.0;
     args.nrecinf = floor(args.Tinf/args.deltarh);
 
     %time
@@ -164,10 +164,22 @@ function args = CreateParameters()
     args.yspecobs = fft(args.yobs,[],2);  
 
     % Optimization parameters
-    args.gamma = 1e-3;
-    args.tol = 1e-2;
+    args.gamma = 1e0;
+    args.tol = 1e-4;
     args.beta = 0.5;
     args.zeta = 0.1;
+    
+    
+    %adaptive two-points method algo
+    args.P = 16;% P >= 4M >= 8L
+    args.M = 4;
+    args.L = 2;%L <=5
+    args.gamma1 = 2.0;%\geq 1, M/L
+    args.gamma2 = 4.0;%\geq 1 P/M
+    args.alphamin = 0.0;
+    args.alphamax = 0.0;
+    args.sigma1 = 0.1;% 0 < sigma1 < sigma2 < 1
+    args.sigma2 = 0.9;
     
     % For fsolve   
     args.optimOptState.TolFun = 1e-8;
@@ -189,8 +201,6 @@ function args = CreateParameters()
     args.MassT = args.dt*speye(args.nmax+1);
     args.MassT(1,1) = 0.5*args.dt;
     args.MassT(end,end) = 0.5*args.dt;
-    % construct the matrix A for the inner product in H (space and time)
-    % (u,v)_H = u'Av
     args.Mass = kron(args.MassS,args.MassT);%should be diag(MassT(i)*MassS)
 end
 
@@ -358,9 +368,6 @@ function exp = explicitpartAdjoint(p,y,discr,args)
         aux(args.arraydealiasing) = 0.0;
     end
     exp = args.Einv.*p + aux - args.dt*discr;
-    %if(args.dealiasing==1)
-    %    exp(args.arraydealiasing) = 0.0;
-    %end
 end
 
 function [F,Jinfo] = fsolverAdjoint(p,y,b,args)
@@ -370,10 +377,6 @@ function [F,Jinfo] = fsolverAdjoint(p,y,b,args)
     end
     F = p - aux - b;
     Jinfo = y;
-    %if(args.dealiasing==1)
-    %    F(args.arraydealiasing) = 0.0;
-    %    Jinfo(args.arraydealiasing) = 0.0;
-    %end
 end
 
 function W = jmfunAdjoint(Jinfo,Dp,flag,args)
@@ -495,12 +498,11 @@ function [djcol,djmat] = compute_derivatives_j(u,y,p,args)%do not forget time in
     djmat = dtrack + args.gamma*fftu;%result under matrix form row = time, col = space
 end
 
-function [y,p,u,args] = solveOptimization(t0,args)
+function [y,p,uspace,args] = solveOptimization(t0,args)
 
     %params and init
     gamma = args.gamma;
     M = args.Mass;
-    abstol=1e-6;
     
     %%  Start of Gradient descent strategy
     fprintf('Gradient descent strategy...\n');
@@ -519,7 +521,7 @@ function [y,p,u,args] = solveOptimization(t0,args)
     ngrad = sqrt(real(grad'*M*grad))
     
     count = 0;
-    while(ngrad > args.tol)
+    while( (ngrad > args.tol) && (count < 1e3) )
         
         if(count==0)
            stepsize = 1.0/ngrad;
@@ -531,15 +533,109 @@ function [y,p,u,args] = solveOptimization(t0,args)
         j = compute_j(uspace,y,args)
         
         %%linesearch
-        m = 0;
-        while( (j - jold) > -args.zeta*stepsize*ngrad*ngrad && m < 30)
-            m = m+1
-            stepsize = stepsize*args.beta;
-            u = uold - stepsize*grad2;%gradient change in spectral space
-            uspace = real(ifft(u,[],2));%go back to spatial space
-            y = solveState(uspace,args);%
-            j = compute_j(uspace,y,args);
+%         m = 0;
+%         while( (j - jold) > -args.zeta*stepsize*ngrad*ngrad && m < 30)
+%             m = m+1
+%             stepsize = stepsize*args.beta;
+%             u = uold - stepsize*grad2;%gradient change in spectral space
+%             uspace = real(ifft(u,[],2));%go back to spatial space
+%             y = solveState(uspace,args);%
+%             j = compute_j(uspace,y,args);
+%         end
+        p = solveAdjoint(uspace,y,args);% one forward simulation for y
+        myvisu(1,y.spatial,p.spatial,uspace,args)
+
+        [grad,grad2] = compute_derivatives_j(uspace,y,p,args);
+        ngrad = sqrt(real(grad'*M*grad))
+        
+        %stepsize
+        s = u - uold;
+        s = s(:);
+        g = grad - gradold;%already in column
+        stg = real(g'*M*s);
+        if(stg > 0)
+            disp('stg > 0');
+            if mod(count,2)
+                sts = real(s'*M*s);
+                stepsize = sts/stg;
+            else
+                gtg = real(g'*M*g);
+                stepsize = stg/gtg;
+            end
+        else
+           disp('stg < 0');
+            stepsize = 1.0/ngrad;
         end
+        
+        uold = u;
+        jold = j;
+        gradold = grad;
+        
+        count = count+1
+    end
+end
+
+
+function [y,p,uspace,args] = solveOptimizationGlobal(t0,args)
+
+    %params and init
+    gamma = args.gamma;
+    M = args.Mass;
+    
+    %%  Start of Gradient descent strategy
+    fprintf('Gradient descent strategy...\n');
+    fprintf('gamma = %d , t_0 = %d, delta = %d\n', ...
+        gamma, t0, args.deltarh);
+    
+    uold = zeros(args.nmax+1, args.N);%initial guess spectral space
+    uspaceold = real(ifft(uold,[],2));%initial guess spatial space
+    
+    yold = solveState(uspaceold,args);% one forward simulation for y
+    jold = compute_j(uspaceold,yold,args)
+    pold = solveAdjoint(uspaceold,yold,args);% one forward simulation for y
+
+    [grad,grad2] = compute_derivatives_j(uspaceold,yold,pold,args);
+    gradold = grad;
+    gradold2=grad2;
+    ngrad = sqrt(real(grad'*M*grad))
+    
+    
+    lindex = 0;
+    pindex = 0;
+    jmin = jold;
+    jref = jold;
+    jc = jold;
+    jarray = [jold];
+    jmax = jold;
+    
+    count = 0;
+    while(ngrad > args.tol)
+        
+        if(count==0)
+           stepsize = 1.0/ngrad;
+        end
+    
+%         u = uold - stepsize*grad2;%gradient change in spectral space
+%         uspace = real(ifft(u,[],2));%initial guess spatial space
+%         y = solveState(uspace,args);% one forward simulation for y
+%         j = compute_j(uspace,y,args)
+%         
+%         %%linesearch
+%         m = 0;
+%         while( (j - jold) > -args.zeta*stepsize*ngrad*ngrad && m < 30)
+%             m = m+1
+%             stepsize = stepsize*args.beta;
+%             u = uold - stepsize*grad2;%gradient change in spectral space
+%             uspace = real(ifft(u,[],2));%go back to spatial space
+%             y = solveState(uspace,args);%
+%             j = compute_j(uspace,y,args);
+%         end
+        
+        [j,u,uspace,y,jref,jmin,jc,jmax,jarray,l,p] = AdaptiveTwoPointsNonmonotonLS(uold,gradold,gradold2,ngrad,... 
+                                            jmax,jmin,jref,jc,jold,jarray,stepsize,lindex,pindex,args);
+        jarray
+        jmax
+        jref
         p = solveAdjoint(uspace,y,args);% one forward simulation for y
         myvisu(1,y.spatial,p.spatial,uspace,args)
 
@@ -568,9 +664,73 @@ function [y,p,u,args] = solveOptimization(t0,args)
         uold = u;
         jold = j;
         gradold = grad;
+        gradold2 = grad2;
         
         count = count+1;
     end
+end
+
+function [jnew,unew,uspacenew,ynew,jref,jmin,jc,jmax,jarray,l,p] = AdaptiveTwoPointsNonmonotonLS(u,gradcol,gradmat,ngrad,... 
+                                            jmax,jmin,jref,jc,jold,jarray,stepsize,l,p,args)
+    
+    if(l==args.L)%max authorized growing steps reached
+        if ( (jmax-jmin)/(jc-jmin) > args.gamma1)
+            jref = jc;
+        else
+            jref = jmax; 
+        end
+        l = 0;
+    end
+    
+    if ( (p > args.P) && (jmax > jold) && ((jref-jold)/(jmax-jold)>= args.gamma2) )
+        jref = jmax;  
+    end
+    
+    %compute new iterate
+    unew = u - stepsize*gradmat;
+    uspacenew = real(ifft(unew,[],2));
+    ynew = solveState(uspacenew,args);
+    jnew = compute_j(uspacenew,ynew,args);
+    
+    m = 0;
+    
+    if((jnew - jold) > -args.zeta*stepsize*ngrad*ngrad)%test armijo rule
+        p = p+1;
+    else
+        p=0;
+        m=0;
+        while( (jnew - min(jref,jmax)) > -args.zeta*stepsize*ngrad*ngrad && m < 30)
+            m = m+1;
+            stepsize = stepsize*args.beta;
+            unew = u - stepsize*gradmat;
+            uspacenew = real(ifft(unew,[],2));
+            ynew = solveState(uspacenew,args);
+            jnew = compute_j(uspacenew,ynew,args);
+        end
+    end
+
+    %update different values for j
+    if(jnew < jmin)%current iterate is the best
+        jc = jnew;
+        jmin = jnew;
+        l = 0;
+    else
+        l = l+1;
+    end
+    
+    if(jnew > jc)%current iterate is bigger than ref
+        jc = jnew;
+    end
+    
+    %update jmax
+    jsize = size(jarray,2);
+    if jsize == args.M
+        jarray = [jarray(2:end),jnew];
+    else
+        jarray = [jarray,jnew];
+    end
+    jmax = max(jarray);
+
 end
 
 function visunormL2(nfig,y,args)

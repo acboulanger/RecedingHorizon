@@ -1,4 +1,4 @@
-function [uconcat,yconcat,pconcat,args] = RecedingHorizonDirichlet()
+function [uconcat,yconcat,pconcat,Jinf,l2normY,l2normYTinf,bbiterations,args] = RecedingHorizonDirichletBBGrad()
     
     ClearClose();
 
@@ -13,6 +13,7 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonDirichlet()
 
     % control domain
     controldomain = zeros(1,args.N+1);
+    %controldomain(1:end) = 1.0;
     controldomain(floor(1*(args.N+1)/12.0):floor(4*(args.N+1)/12.0)) = 1.0;
     controldomain(floor(8*(args.N+1)/12.0):floor(11*(args.N+1)/12.0)) = 1.0;
     [chi, chiT] = ...
@@ -31,31 +32,22 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonDirichlet()
      
      %% Check forward problem
       u = zeros(args.nmax+1,args.N+1);%initialization of the control
-%      %u(1:floor(args.nmax/2),args.N/2-10) = +2.0;
-%      %u(1:floor(args.nmax/2),args.N/2-5) = -2.0;
-%      
-%      %A = 25; B = 16;  %16;
-%      %args.y0 = 3*A^2*sech(.5*(A*(args.chebyGL+2))).^2 + 3*B^2*sech(.5*(B*(args.chebyGL))).^2;
-%      %plot(args.chebyGL,args.y0);
       args.kappa = 0.70;
       args.x0 = 0.0;
       args.y0 = 12*args.kappa^2*sech(args.kappa*(args.chebyGL - args.x0)).^2;%valeurs aux chebypoints
-      %args.y0 = exp(-1.5*(args.chebyGL+12).*(args.chebyGL+12)/(2.0*args.D));%valeurs aux chebypoints
-%      %args.yspecobs = args.matrices.trialT\(args.yobs)';
-      y = solveState(u,args);% one forward simulation for y
       
- %     p = solveAdjoint(u,y,args);% one forward simulation for y
-      
-      plottedsteps=1:10:size(y.spatial,1);
-      [tg,xg] = meshgrid(args.tdata(plottedsteps),args.chebyGL(1:end));
-      
-      
-       figure(1);
-       surf(xg,tg,y.spatial(plottedsteps,:)');
-       xlabel('x');ylabel('Time');zlabel('State variable y');
-       title('State Variable y');
-       view(-16,10);
-       shading interp;
+%       y = solveState(u,args);% one forward simulation for y
+%       p = solveAdjoint(u,y,args);% one forward simulation for y
+%       
+%       plottedsteps=1:2:size(y.spatial,1);
+%       [tg,xg] = meshgrid(args.tdata(plottedsteps),args.chebyGL(1:end));
+%       
+%        figure(1);
+%        surf(xg,tg,y.spatial(plottedsteps,:)');
+%        xlabel('x');ylabel('Time');zlabel('State variable y');
+%        title('State Variable y');
+%        view(-16,10);
+%        shading interp;
 %        
 %        figure(2);
 %        surf(xg,tg,p.spatial(plottedsteps,:)');
@@ -63,23 +55,24 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonDirichlet()
 %        title('Adjoint Variable p');
 %        view(-16,10);
 %        shading interp;
-       
-% 
-%       figure(2);
-%       visunormL2(2,y.spatial(1:100:end,:),args);
 
 
 %% Receding Horizon
     yconcat= zeros(floor(args.Tinf/args.dt)+1, args.N+1);
     pconcat= zeros(floor(args.Tinf/args.dt)+1, args.N+1);
     uconcat= zeros(floor(args.Tinf/args.dt)+1, args.N+1);
+    Jinf = 0;
+    l2normY = 0;
+    bbiterations = 0;
     for irh=1:args.nrecinf
         if(irh>1)%initial condition is previous result at time = delta
             args.y0 = ykeep(end,:);
         end
         %run optimization process bis T;
-        [y,p,u,args] = solveOptimization((irh-1)*args.deltarh,args);
-        
+        [y,p,u,jT,l2normyt,bbit,args] = solveOptimizationGlobal((irh-1)*args.deltarh,args);
+        bbiterations = bbiterations + bbit;
+        Jinf = Jinf + jT;
+        l2normY = l2normY + l2normyt;
         %keep data only until deltarh
         ykeep = y.spatial(1:args.nkeep,:);
         pkeep = p.spatial(1:args.nkeep,:);
@@ -101,8 +94,11 @@ function [uconcat,yconcat,pconcat,args] = RecedingHorizonDirichlet()
             uconcat(end,:) = ukeep(end,:);
         end
         myvisu(1,yconcat,pconcat,uconcat,args);
-    end%end loop on deltas
-    save('dirichletTRSN.mat');
+    end%end loop on deltas 
+    l2normY = sqrt(l2normY);
+    yspecend = args.matrices.trialT\(yconcat(end,:)');
+    l2normYTinf = sqrt(yspecend'*(args.matrices.A*yspecend));%store last norm
+    save('dirichletBBGradgamma01T2.mat');
  end
 
 function ClearClose()   
@@ -141,7 +137,7 @@ function args = CreateParameters()
     
     %Receding horizon
     args.deltarh = 1.0;
-    args.T = 200.0;
+    args.T = 2.0;
     args.Tinf = 200.0;
     args.nrecinf = floor(args.Tinf/args.deltarh);
 
@@ -158,15 +154,24 @@ function args = CreateParameters()
 
 
     % Optimization parameters
-    args.alpha = 0.0;
-    args.epsilon = 1e-12;
-
-
-    % Trust region Steihaug globalization
-    args.gamma =1.0;
-    %args.delta = 1.0;
-    args.sigma = 10.0;
-    args.sigmamax = 100.0;
+    args.gamma = 1e-1;
+    args.tol = 1e-4;
+    args.beta = 0.5;
+    args.zeta = 0.001;
+    
+    
+    %adaptive two-points method algo
+    args.P = 40;% P >= 4M >= 8L
+    args.M = 20;
+    args.L = 5;%L <=5
+    args.gam1 = args.M/args.L;%\geq 1, M/L
+    args.gam2 = args.P/args.M;%\geq 1 P/M
+    args.alphamin = 0.0;
+    args.alphamax = 0.0;
+    args.sigma1 = 0.1;% 0 < sigma1 < sigma2 < 1
+    args.sigma2 = 0.9;
+    args.LS = 1;
+    
 
     % Misc
     args.coeffNL = 1.0;
@@ -176,7 +181,6 @@ function args = CreateParameters()
     args.dy0 = zeros(1,args.N+1);
     args.yobs = zeros(args.nmax+2,args.N+1);
     args.yspecobs = zeros(args.nmax+2,args.N-2)';
-    args.q = 0.0*ones(args.nmax+2, args.N+1);
     
     args.normp = zeros(1,args.N+1);
     
@@ -470,327 +474,185 @@ function p = solveAdjoint(u,y,args)
 end
 
 %% %%%%%%%%%%%%%%%% Tracking term %%%%%%%%%%%%%%%%
-function j = compute_j(u,y,args)
-    j = 0;
-    for i=2:args.nmax+2
+
+function l2normy = compute_l2normy(u,y,args)
+    l2normy = 0;
+    for i=1:args.nkeep
         discr = args.matrices.Obs*(y.spatial(i,:)'-args.yobs(i,:)');
         ymyd = args.matrices.trialT\discr;
-        j = j+ 0.5*args.dt*ymyd'*(args.matrices.A*ymyd);
+        l2normy = l2normy+ args.dt*ymyd'*(args.matrices.A*ymyd);
     end
 end
 
-function dj = compute_derivatives_j(u,y,p,args)%do not forget time in inner product
+function [j,jkeep] = compute_j(u,y,args)
+    j = 0;
+    for i=2:args.nkeep
+        discr = args.matrices.Obs*(y.spatial(i,:)'-args.yobs(i,:)');
+        ymyd = args.matrices.trialT\discr;
+        j = j+ 0.5*args.dt*ymyd'*(args.matrices.A*ymyd) + 0.5*args.gamma*args.dt*u(:)'*(args.matrices.Mass*u(:));
+    end
+    jkeep=j;
+    for i=(args.nkeep+1):args.nmax+2
+        discr = args.matrices.Obs*(y.spatial(i,:)'-args.yobs(i,:)');
+        ymyd = args.matrices.trialT\discr;
+        j = j+ 0.5*args.dt*ymyd'*(args.matrices.A*ymyd) + 0.5*args.gamma*args.dt*u(:)'*(args.matrices.Mass*u(:));
+    end
+end
+
+function [dj,dj2] = compute_derivatives_j(u,y,p,args)%do not forget time in inner product
     %p: row = time, column = space
-    dj = -((args.matrices.BT)*(p)')';%each column is B*p(t_i)
-    dj = dj(:);%makes a vector
+    dj2 = -((args.matrices.BT)*(p)')' + args.gamma*u;%each column is B*p(t_i)
+    dj = dj2(:);%makes a vector
 end
 
-function ddj = compute_second_derivatives_j(u, y, p, du, dy, dp,args)
-    ddj = -((args.matrices.BT)*(dp)')';%each column is B*dp(t_i)
-    ddj = ddj(:);%makes a vector
-end
-
-%% %%%%%%%%%%%%%%%% solveTangent functions %%%%%%%%%%%%%%%%
-function dy = solveTangent(u, y, du, args)
-    dt=args.dt;
-    nmax=args.nmax;
-    N=args.N;
-    coeffNL = args.coeffNL;
-    matrices = args.matrices;
-
-    % Storage matrices
-    dy.spatial = zeros(nmax+2,N+1);
-    dy.spec = zeros(nmax+2,N-2);
-
-    % initial condition and source in the spectral space
-    dyspec0=matrices.trialTInv*(args.dy0)';
-    du = (args.matrices.B*(du'))';%effect of indicator function
-    %duspec = matrices.trialTInv*du';
-    %duspec=duspec';
-    dy.spatial(1,:) = args.dy0;
-    dy.spec(1,:) = dyspec0;
-
-    %first time step in the spectral space, semi implicit
-    NLterm = y.spatial(1,:).*(args.dy0);
-    pNLterm = coeffNL*matrices.trialTInv*NLterm';
-    dyspec1 = matrices.leftInv*((0.5*matrices.M)*dyspec0 ...
-        + 0.5*dt*(-matrices.Pnl*pNLterm + matrices.fP*dyspec0 ...
-        + matrices.test*matrices.MassS*du(1,:)'));
-    dy1 = matrices.trialT*dyspec1;
-    dy.spatial(2,:) = dy1;
-    dy.spec(2,:) = dyspec1;
-
-    % Time loop
-    dym1 = dy1;
-    dyspecm1 = dyspec1;
-    dyspecm2 = dyspec0;
-    for i=2:nmax
-        NLterm = y.spatial(i,:)'.*dym1;
-        pNLterm = coeffNL*matrices.trialTInv*NLterm;
-        dyspeci = (matrices.leftInv)*( (matrices.right)*dyspecm2 ...
-          + dt*(-matrices.Pnl*pNLterm...
-          + matrices.fP*dyspecm1 ...
-          + matrices.test*matrices.MassS*du(i,:)') );
-        dyi = matrices.trialT*dyspeci;
-        dym1 = dyi;
-        dyspecm2 = dyspecm1;
-        dyspecm1 = dyspeci;
-        dy.spec(i+1,:) = dyspeci;
-        dy.spatial(i+1,:) = dyi;
-    end
+function [jnew,unew,ynew,jref,jmin,jc,jmax,jarray,l,p,jnewkeep,l2normy] = AdaptiveTwoPointsNonmonotonLS(u,gradcol,gradmat,ngrad,... 
+                                            jmax,jmin,jref,jc,jold,jarray,stepsize,l,p,args)
     
-    % last step
-    minv=inv(matrices.M);
-    NLterm = y.spatial(nmax+1,:)'.*dym1;
-    pNLterm=coeffNL*matrices.trialTInv*NLterm;
+    %compute new iterate
+    unew = u - stepsize*gradmat;
+    ynew = solveState(unew,args);
+    [jnew,jnewkeep] = compute_j(unew,ynew,args);
     
-%     rhs = ((matrices.right)*dyspecm2...
-%                     + 0.5*dt*(matrices.P*pNLterm + matrices.P*dyspecm1)...
-%                     + 0.5*matrices.M*dyspecm1...
-%                     + 1.0*0.5*dt*matrices.M*dqspec(nmax+1,:)');
-%     [dyspecend,success,residual,itermeth] = gmres(matrices.M,rhs,[],args.tolgmres,N-2);
-    dyspecend = (matrices.Mreg)\((matrices.right)*dyspecm2...
-                   + 0.5*dt*(-matrices.Pnl*pNLterm + matrices.fP*dyspecm1)...
-                   + 0.5*matrices.M*dyspecm1...
-                   + 1.0*0.5*dt*matrices.test*matrices.MassS*du(nmax+1,:)');
-     dyend = matrices.trialT*dyspecend;
-     dy.spec(end,:) = dyspecend;
-     dy.spatial(end,:) = dyend;
-end
-
-
-%% %%%%%%%%%%%%%%%% solveDFH functions %%%%%%%%%%%%%%%%
-function dp = solveDFH(u, y, p, du, dy, args)
-    dt=args.dt;
-    nmax=args.nmax;
-    N=args.N;
-    coeffNL = args.coeffNL;
-    matrices = args.matrices;
-
-    %source term
-    yrev = y.spatial(end:-1:1,:);
-    dyrev = dy.spatial(end:-1:1,:);
-    pspecrev=p.spec(end:-1:1,:);
-
-    % Storage array
-    dp.spatial = zeros(nmax+1,N+1);
-    dp.spec = zeros(nmax+1,N-2);
-
-    %initial condition
-    mt = matrices.MTreg;
-    %rhs = -matrices.A*(dy.spec(end,:)');
-    %[dpspec0,success,residual,itermeth] = gmres(mt,rhs,[],args.tolgmres,N-2);
-    rhsspatial = args.matrices.Obs*(dy.spatial(end,:)');
-    rhsspec = matrices.trialT\rhsspatial;
-    dpspec0= -mt\(dt*matrices.Adjoint*matrices.A*(rhsspec));
-    dp0 = (matrices.testT)*(dpspec0);
-    
-    dp.spatial(1,:) = dp0;
-    dp.spec(1,:) = dpspec0;
-
-    %first step
-
-    NLterm = yrev(2,:)'.*(matrices.trialTInv'*(matrices.PnlT*dpspec0));
-    NLterm2 = dyrev(2,:)'.*...
-        (matrices.trialTInv'*(matrices.PnlT*pspecrev(1,:)'));
-    pNLterm = coeffNL*matrices.trial*(NLterm+NLterm2);
-    rhsspatial = args.matrices.Obs*(dyrev(2,:)');
-    rhsspec = matrices.trialT\rhsspatial;
-    dpspec1 = matrices.leftTInv*(0.5*matrices.MT*dpspec0 + ...
-        0.5*dt*(matrices.fPT*dpspec0 - pNLterm...
-        - 2.0*matrices.Adjoint*matrices.A*(rhsspec)));
-    dp1 = matrices.testT*dpspec1;
-
-    dp.spatial(2,:) = dp1;
-    dp.spec(2,:) = dpspec1;
-    dpspec2 = dpspec0;
-    
-    % Time loop
-    for i = 2:(nmax)
-        NLterm = yrev(i+1,:)'.*(matrices.trialTInv'*(matrices.PnlT*dpspec1));
-        NLterm2 = dyrev(i+1,:)'.*...
-            (matrices.trialTInv'*(matrices.PnlT*pspecrev(i,:)'));
-        pNLterm = coeffNL*matrices.trial*(NLterm+NLterm2);
-        rhsspatial = args.matrices.Obs*(dyrev(i+1,:)');
-        rhsspec = matrices.trialT\rhsspatial;
-        dpspeci=matrices.M_leftTinv_rightT*dpspec2...
-                + matrices.M_leftTinv_dt* (matrices.fPT*dpspec1 - pNLterm...
-                - matrices.Adjoint*matrices.A*(rhsspec));
-        dpi = matrices.testT*dpspeci;
-        dpspec2 = dpspec1;
-        dpspec1 = dpspeci; 
-        dp.spec(i+1,:) = dpspeci;
-        dp.spatial(i+1,:) = dpi;
-    end
-    %reverse results
-    dp.spec = dp.spec(end:-1:1,:);
-    dp.spatial = dp.spatial(end:-1:1,:);
-end
-
-
-%% %%%%%%%%%%%%%%%% Proximal map %%%%%%%%%%%%%%%%
-function u = proximalOp(q,gamma,args)
-    %q is here a vector - needs to be transformed in a matrix
-    %gamma = args.gamma;
-    q = reshape(q,args.nmax+1,args.N+1);
-    %L2NormInTimeQ = sqrt(sum(args.matrices.MassT*((q).*...
-    %    (q))));
-    %%size(L2NormInTimeQ)
-    %for k=1:(args.N+1)    % check norm 0           
-    %    if (L2NormInTimeQ(k) <= args.epsilon)
-    %        L2NormInTimeQ(k) = (args.alpha/gamma - args.epsilon);
-    %    end
-    %end
-    %u = 1/gamma*repmat(max(0,gamma-args.alpha./L2NormInTimeQ),...
-    %    args.nmax+1,1).*(q);
-    u = q;
-end
-
-function dpc = proximalOpDerivative(q,dq,gamma,args)
-    % q and dq are vectors - needs to be reshaped in matrices
-    %gamma = args.gamma;
-    nmax = args.nmax;
-    MassT = args.matrices.MassT;
-    q = reshape(q,args.nmax+1,args.N+1);
-    dq = reshape(dq,args.nmax+1,args.N+1);
-    L2NormInTimeQ = sqrt(sum(MassT*((q).*(q))));
-    for k=1:(args.N+1)    % check norm 0           
-        if (L2NormInTimeQ(k) <= args.epsilon)
-            L2NormInTimeQ(k) = 0.0;
+    if (args.LS)
+        if(l==args.L)%max authorized growing steps reached
+            if ( (jmax-jmin)/(jc-jmin) > args.gam1)
+                jref = jc;
+            else
+                jref = jmax; 
+            end
+            l = 0;
         end
-    end
-    ActiveSet = repmat(L2NormInTimeQ > 0,args.nmax+1,1);
-    dpc = ActiveSet.*dq;
-    dpc = dpc(:);
-end
 
-%% %%%%%%%%%%%%%%%%% Reduced Hessian %%%%%%%%%%%%%%%
-function DGh = compute_reduced_hessian(q,dq,u,y,p,gamma,args)
-% dq is an array
-% Newton derivative of G
-%
-% DG(q)dq = dq + Hj(Pc(q))DPc(q)dq
-%
-% NB: chain rule for semismoothness
-    %du = proximalOp(dq,gamma,args); 
-    du = proximalOpDerivative(q,dq,gamma,args);
-    du = reshape(du,args.nmax+1,args.N+1);
-    dy = solveTangent(u, y, du, args);
-    dp = solveDFH(u, y, p, du, dy, args);
-    ddj = compute_second_derivatives_j(u,y.spatial,p.spatial,...
-        du,dy.spatial,dp.spatial,args);
+        if ( (p > args.P) && (jmax > jold) && ((jref-jold)/(jmax-jold)>= args.gam2) )
+            jref = jmax;  
+        end
 
-    DGh = args.matrices.Mass*(gamma*dq + ddj);%include mass matrix in result
-
-end
-
-function [y,p,u,args] = solveOptimization(t0,args)
-    gamma = args.gamma;
-    q = 0.01*ones((args.nmax+1)*(args.N+1),1);%initialization of the normal variable
-    u = proximalOp(q,gamma,args);
+        m = 0;
+        if((jnew - jold) <= -args.zeta*stepsize*ngrad*ngrad)%test armijo rule
+            p = p+1;
+        else
+            p=0;
+            m=0;
+            while( (jnew - min(jref,jmax)) > -args.zeta*stepsize*ngrad*ngrad && m < 5)
+                %jnew - min(jref,jmax)
+                m = m+1
+                stepsize = stepsize*args.beta;
+                unew = u - stepsize*gradmat;
+                ynew = solveState(unew,args);
+                [jnew,jnewkeep] = compute_j(unew,ynew,args);
+            end
+        end
         
+        l2normy = compute_l2normy(unew,ynew,args);
+        %update different values for j
+        if(jnew < jmin)%current iterate is the best
+            jc = jnew;
+            jmin = jnew;
+            l = 0;
+        else
+            l = l+1;
+        end
 
-%%  Start of Trust Region Steihaug globalization strategy
-    fprintf('Steihaug-CG globalization strategy...\n');
-    %delta = args.delta;
-    %gamma = args.gamma;% regularization term in 1/gamma
+        if(jnew > jc)%current iterate is bigger than ref
+            jc = jnew;
+        end
+
+        %update jmax
+        jsize = size(jarray,2);
+        if jsize == args.M
+            jarray = [jarray(2:end),jnew];
+        else
+            jarray = [jarray,jnew];
+        end
+        jmax = max(jarray);
+    end
+    if(args.LS==0)
+       l2normy = compute_l2normy(unew,ynew,args);
+    end
+end
+
+function [y,p,u,jkeep,l2normyt,bbit,args] = solveOptimizationGlobal(t0,args)
+
+    %params and init
+    gamma = args.gamma;
+    M = args.matrices.Mass;
+    
+    %%  Start of Gradient descent strategy
+    fprintf('Gradient descent strategy...\n');
     fprintf('gamma = %d , t_0 = %d, delta = %d\n', ...
         gamma, t0, args.deltarh);
-    abstol=1e-6;
-    %     
-    %q = 1.0*ones((args.nmax+1)*(args.N+1),1);%initialization of the normal variable
-    qold = q;
-% 
-    fold = inf;
-    sigma = args.sigma;% Trust region radius
-    sigmamax = args.sigmamax;
+    
+    uold = zeros(args.nmax+1, args.N+1);%initial guess spectral space
+    
+    yold = solveState(uold,args);% one forward simulation for y
+    [jold,jkeepold] = compute_j(uold,yold,args)
+    pold = solveAdjoint(uold,yold,args);% one forward simulation for y
 
-    for iter=1:(args.maxiter)
-        % compute the current iterate for the control
-        % u = P_gamma(q)
-        % where P_gamma is the proximal operator
-        u = proximalOp(q,gamma,args);
-        % solve state equation y=S(u)
-        y = solveState(u,args);% one forward simulation for y
-
-        % compute reduced objective functional
-        % f(u) = j + L12 + L22
-        % f(u) = 1/2|y(u) - yd|^2 + gamma/2*|u|_{L2(L2)}^2
-        j = compute_j(u,y,args);
-
-        %sqrt(args.dt*sum(u.*u)) )');
-        uvec = u(:);
-        norm22 = 0.5*gamma*uvec'*args.matrices.Mass*uvec;
-        f = j + norm22;
-
-        if iter > 1
-            %check for descent in objective functional
-            sigmaold = sigma;
-            if(fold < (1-1e-11)*f || isnan(f))%not a descent direction
-                sigma = 0.2*sigma;
-                fprintf('\t Reject step since %1.9e >~ %1.9e \t %1.2e -> %1.2e \n',...
-                    f, fold, sigmaold, sigma);
-                q = qold;
-                u = uold;
-                y = yold;
-                f = fold;
-            else
-                %evaluate the decrease predicted
-                %by the quadratic model (at the old iterate q)
-                %m(dv)
-                %du = proximalOp(dq,gamma,args)
-                du = proximalOpDerivative(q,dq,gamma,args);
-                DGdq = compute_reduced_hessian(q,dq,u,y,p,gamma,args);%TO DO, result shall be vector
-                model = G'*du(:) + 0.5*DGdq'*du(:);
-                rho = (f - fold)/model;
-
-                if(abs(rho-1) < 0.2)%trust region might be too small
-                    sigma = min(2*sigma, sigmamax);
-                elseif(abs(rho-1) > 0.6)%trust region is be too big, no good approximation
-                    sigma = 0.4*sigma;
-                end
-                fprintf('\t rho = %f, \t %1.2e -> %1.2e \n', ...
-                    rho, sigmaold, sigma);
-            end
-        end  
-        qold = q;
-        uold = u;
-        yold = y;
-        fold = f;
-
-        % reduced subgradient
-        %
-        % G(q) = q + \nabla j(P_gamma(a))
-        % NB: we want G(q) = 0
-        p = solveAdjoint(u,y,args);
-        dj = compute_derivatives_j(u,y.spatial,p.spatial,args);
-        G = args.matrices.Mass*(dj + gamma*q);
-
-        % stopping criterion
-        res = sqrt(G'*(args.matrices.Mass\G));
-        fprintf('%d: f = %e, res=%e\n', iter,f,res);
-        if(res < abstol || sigma < 1e-8)
-            break
-        end
-
-
-        % compute the Newton update
-        % DG(q) dq = -G(q)
-        DG = @(dq) compute_reduced_hessian(q,dq, u, y, p, gamma, args);
-
-        % with M(odified)PCG
-        DP = @(dq) proximalOpDerivative(q,dq,gamma,args);
-        [dq, flag, relres, pcggit] = SteihaugCG(DG, -G, 1e-5, floor(args.nmax/3),...
-            args.matrices.Mass, sigma, DP);
-        fprintf('krylov %s: iter=%d, relres=%e, |dq|=%e\n', ...
-            flag, pcggit, relres, sqrt(dq'*args.matrices.Mass*dq))
-
-        % apply (TR)-Newton update
-        q = qold + dq;
+    [grad,grad2] = compute_derivatives_j(uold,yold.spatial,pold.spatial,args);
+    gradold = grad;
+    gradold2=grad2;
+    ngrad = sqrt(grad'*M*grad)
+    
+    
+    lindex = 0;
+    pindex = 0;
+    jmin = jold;
+    jref = jold;
+    jc = jold;
+    jarray = [jold];
+    jmax = jold;
+    
+    bbit = 0;
+    while(ngrad > args.tol && bbit < 500)
         
-        %myvisu(3,y.spatial,p.spatial,u,gamma,args);
-    end %end TR-SN loop
+        if(bbit==0)
+           stepsize = 1.0/ngrad;
+        end
+        
+        [j,u,y,jref,jmin,jc,jmax,jarray,l,p,jkeep,l2normyt] = AdaptiveTwoPointsNonmonotonLS(uold,gradold,gradold2,ngrad,... 
+                                            jmax,jmin,jref,jc,jold,jarray,stepsize,lindex,pindex,args);
+        p = solveAdjoint(u,y,args);% one forward simulation for y
+        %myvisu(1,y.spatial,p.spatial,uspace,args)
+
+        [grad,grad2] = compute_derivatives_j(u,y.spatial,p.spatial,args);
+        ngrad = sqrt(real(grad'*M*grad))
+        
+        %stepsize
+        s = u - uold;
+        s = s(:);
+        g = grad - gradold;%already in column
+        stg = real(g'*M*s);
+        if(stg > 0)
+            %disp('stg > 0');
+            if mod(bbit,2)
+                sts = real(s'*M*s);
+                stepsize = sts/stg;
+            else
+                gtg = real(g'*M*g);
+                stepsize = stg/gtg;
+            end
+        else
+            %disp('stg < 0');
+            stepsize = 1.0/ngrad;
+        end
+        
+        uold = u;
+        jold = j;
+        gradold = grad;
+        gradold2 = grad2;
+        
+        bbit = bbit+1
+        j
+    end
+    if(bbit==0)
+        y = yold;
+        p = pold;
+        u = uold;
+        jkeep = jkeepold;
+        l2normyt = compute_l2normy(u,y,args);
+    end
 end
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%% VISUALIZATION %%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
